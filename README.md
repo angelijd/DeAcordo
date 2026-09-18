@@ -1,6 +1,6 @@
 ﻿# 🤝 DeAcordo — Central de Aprovações Comerciais & Casos Complexos
 
-Aplicativo nativo para o Slack da **Arco Educação (Ciclo Comercial 2027)** para governança, roteamento automático de alçadas e aprovações em 1 clique, eliminando retrabalho de consultores e filas operacionais de contratos.
+Aplicativo nativo para o Slack da **Arco Educação (Ciclo Comercial 2026/27)** para governança, roteamento automático de alçadas e aprovações em 1 clique, eliminando retrabalho de consultores e filas operacionais de contratos.
 
 ---
 
