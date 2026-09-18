@@ -39,6 +39,7 @@ def create_ticket(
     approvals_list: List[Dict[str, Any]],
     main_text_base: str = "",
     thread_permalink: Optional[str] = None,
+    extra_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Registra um novo ticket com a lista de aprovadores individuais.
@@ -80,6 +81,7 @@ def create_ticket(
             "short_label": apprv["short_label"],
             "approver_id": eff_id,
             "approver_name": eff_name,
+            "scope_reason": apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial.",
             "status": "pending",  # pending | approved | rejected
             "approved_by_id": None,
             "approved_by_name": None,
@@ -105,6 +107,14 @@ def create_ticket(
         "status": "pending",  # pending | completed
         "created_at": datetime.now().strftime("%d/%m/%Y às %H:%M"),
         "approvals": approvals,
+        "extra_data": extra_data or {},
+        "acv": (extra_data or {}).get("acv") or "-",
+        "marcas": (extra_data or {}).get("marcas") or "-",
+        "cnpj": (extra_data or {}).get("cnpj") or "-",
+        "inep": (extra_data or {}).get("inep") or "-",
+        "valor_divida": (extra_data or {}).get("valor_divida"),
+        "tem_divida_alta": (extra_data or {}).get("tem_divida_alta", False),
+        "marcas_com_inviab": bool((extra_data or {}).get("marcas_com_inviab")),
     }
 
     tickets[ticket_key] = ticket
@@ -280,6 +290,31 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         }
     ]
 
+    # Badges operacionais de destaque para a Triagem
+    badges = []
+    tem_divida_alta = ticket.get("tem_divida_alta") or ticket.get("extra_data", {}).get("tem_divida_alta")
+    if tem_divida_alta:
+        div_val = ticket.get("valor_divida") or ticket.get("extra_data", {}).get("valor_divida") or "> 50k"
+        badges.append(f"🚨 *DÍVIDA CRÍTICA (R$ {div_val})*")
+
+    tem_inviab = ticket.get("marcas_com_inviab") or ticket.get("extra_data", {}).get("marcas_com_inviab")
+    if tem_inviab:
+        badges.append("⚠️ *INVIABILIDADE DETECTADA*")
+
+    if any(a.get("is_substituted") for a in ticket.get("approvals", {}).values()):
+        badges.append("🔄 *SUBSTITUTO ATIVO*")
+
+    if badges:
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "📌 *Alertas Operacionais (@triagem):* " + " • ".join(badges)
+                }
+            ]
+        })
+
     is_rejected = (ticket.get("status") == "rejected")
     all_approved = (ticket.get("status") == "completed")
     approvals = ticket.get("approvals", {})
@@ -412,7 +447,13 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "type": "button",
                     "action_id": "btn_triagem_substituicao",
                     "value": ticket["key"],
-                    "text": {"type": "plain_text", "text": "🔄 Substituir Aprovador por Ausência (@triagem)", "emoji": True}
+                    "text": {"type": "plain_text", "text": "🔄 Substituir Aprovador por Ausência", "emoji": True}
+                },
+                {
+                    "type": "button",
+                    "action_id": "btn_triagem_cobrar_ticket",
+                    "value": ticket["key"],
+                    "text": {"type": "plain_text", "text": "🔔 Cobrar Pendências Deste Ticket", "emoji": True}
                 }
             ]
         })
@@ -518,3 +559,104 @@ def executar_cobranca_pendencias(client) -> int:
 
     logger.info(f"Cobrança inteligente concluída: {total_cobrados} lembretes enviados.")
     return total_cobrados
+
+
+def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str) -> Dict[str, Any]:
+    """
+    Dispara cobrança pontual focada nas alçadas pendentes deste ticket específico,
+    postando alerta com menções na thread e disparando lembrete nas DMs dos aprovadores.
+    """
+    tickets = load_tickets()
+    ticket = tickets.get(ticket_key)
+    if not ticket:
+        return {"success": False, "message": "⚠️ Ticket não encontrado no histórico ativo."}
+
+    if ticket.get("status") in ("completed", "rejected"):
+        return {"success": False, "message": f"⚠️ Este ticket já foi concluído como *{ticket.get('status')}*."}
+
+    pendentes = [a for a in ticket.get("approvals", {}).values() if a.get("status") == "pending"]
+    if not pendentes:
+        return {"success": False, "message": "ℹ️ Não há alçadas pendentes para este ticket."}
+
+    channel_id = ticket["channel_id"]
+    thread_ts = ticket["thread_ts"]
+    escola = ticket.get("escola", "Escola")
+
+    mentions = []
+    labels = []
+    for p in pendentes:
+        approver_id = p.get("approver_id")
+        approver_name = p.get("approver_name", "Aprovador")
+        if approver_id and approver_id.startswith(("U", "W")):
+            mentions.append(f"<@{approver_id}>")
+        else:
+            mentions.append(f"@{approver_name}")
+        labels.append(p.get("short_label", p.get("role_title", "Alçada")))
+
+    mentions_str = ", ".join(mentions)
+    labels_str = ", ".join(labels)
+
+    thread_msg = (
+        f"🔔 *Cobrança Operacional de Pendências (@triagem por <@{requested_by_user}>)*\n"
+        f"Atenção {mentions_str}: a solicitação da escola *{escola}* ainda aguarda sua deliberação de *{labels_str}* para liberação de contrato."
+    )
+
+    try:
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=thread_msg
+        )
+    except Exception as e:
+        logger.error(f"Erro ao postar cobrança na thread: {e}")
+
+    # Envia lembrete amigável nas DMs dos aprovadores pendentes
+    from services.dm_approval_service import USE_MOCK_USERS
+    total_dms = 0
+    for p in pendentes:
+        target_id = p.get("approver_id")
+        is_mock = False
+        if not (target_id and target_id.startswith(("U", "W"))) and USE_MOCK_USERS:
+            target_id = requested_by_user
+            is_mock = True
+
+        if target_id:
+            try:
+                test_badge = f"🧪 *[MODO DE TESTE]* Cobrança para: *@{p.get('approver_name')}*\n" if is_mock else ""
+                client.chat_postMessage(
+                    channel=target_id,
+                    text=f"🔔 Lembrete de Pendência: {escola} ({p.get('short_label')})",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    f"🔔 *Lembrete de Pendência de Aprovação*\n{test_badge}"
+                                    f"• *Escola:* {escola}\n"
+                                    f"• *Sua Alçada:* {p.get('role_title')}\n\n"
+                                    f"A equipe de *@triagem* solicitou prioridade na deliberação deste ticket. "
+                                    f"Por favor, verifique seu card de aprovação para dar seu parecer."
+                                )
+                            }
+                        },
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f"🔗 <{ticket.get('thread_permalink') or '#'}|Acessar thread do canal de negociação>"
+                                }
+                            ]
+                        }
+                    ]
+                )
+                total_dms += 1
+            except Exception as e:
+                logger.warning(f"Erro ao enviar DM de cobrança: {e}")
+
+    return {
+        "success": True,
+        "total_pendentes": len(pendentes),
+        "message": f"✅ Cobrança disparada com sucesso na thread e via DM para {len(pendentes)} alçada(s) pendente(s)!"
+    }

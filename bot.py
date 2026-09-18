@@ -26,9 +26,11 @@ from services.ticket_service import (
     build_main_post_blocks,
     update_ticket_card_ts,
     executar_cobranca_pendencias,
+    cobrar_pendencias_de_ticket,
     get_pending_tickets,
 )
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
+from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
 from services.substitution_service import registrar_substituicao, get_active_substitute
 from views.modals import (
     build_aprovacoes_modal,
@@ -793,7 +795,7 @@ def handle_submission(ack, body, client):
             all_split_lines.append(sub)
     unified_quote_text = "\n".join(f"> {l}" if l.strip() else ">" for l in all_split_lines)
 
-    # Mapeamento das Alçadas Individuais com Botões
+    # Mapeamento das Alçadas Individuais com Botões e Escopo de Aprovação
     approvals_list = []
 
     # Alçada Comercial (Líder Direto do Consultor)
@@ -804,39 +806,57 @@ def handle_submission(ack, body, client):
         "short_label": "Comercial",
         "approver_id": lider_id if (lider_id and lider_id.startswith(("U", "W"))) else "",
         "approver_name": lider_display,
+        "scope_reason": "Validação de liderança direta sobre as condições comerciais e proposta para o Ciclo CE 2027.",
     })
 
     # Alçada Operações (se alguma exceção exigir)
     ops_item = next((item for item in excecoes_detalhes if item.get("regra_ops") != "-" and item.get("aprov_ops_tag") != "-"), None)
     if ops_item:
         ops_name = ops_item["aprov_ops_tag"].replace("@", "").strip()
+        exc_nome = ops_item.get("nome", "Exceção Operacional")
         approvals_list.append({
             "key": "operacoes",
             "role_title": "⚙️ APROVAÇÃO OPERAÇÕES",
             "short_label": "Operações",
             "approver_id": "",
             "approver_name": ops_name,
+            "scope_reason": f"Exceção operacional identificada: {exc_nome} (Regra de Operações exigida).",
         })
 
     # Alçada Inviabilidade (se alguma marca tiver inviabilidade)
     if marcas_com_inviab:
+        nomes_inviab = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab])
         approvals_list.append({
             "key": "inviabilidade",
             "role_title": "🚨 APROVAÇÃO INVIABILIDADE",
             "short_label": "Inviabilidade",
             "approver_id": "",
             "approver_name": aprovador_inviab_nome,
+            "scope_reason": f"Inviabilidade identificada na(s) marca(s): {nomes_inviab}.",
         })
 
     # Alçada Especial Dívida (> R$ 50k)
     if tem_divida_alta:
+        divida_val_display = divida_fmt if (data.get("tem_divida") == "sim" and data.get("valor_divida")) else "Acima de R$ 50k"
         approvals_list.append({
             "key": "divida_bae",
             "role_title": "💰 APROVAÇÃO PENDÊNCIA FINANCEIRA (> R$ 50k)",
             "short_label": "Dívida > 50k",
             "approver_id": "",
             "approver_name": "Rafael Bae (@triagem--contratos psc)",
+            "scope_reason": f"Pendência financeira crítica: Dívida da escola informada em R$ {divida_val_display}.",
         })
+
+    extra_ticket_data = {
+        "acv": f"R$ {acv_limpo}" if acv_limpo and acv_limpo != "-" else "Não informado",
+        "marcas": marcas_str if marcas_str else "Não informada",
+        "cnpj": cnpj_formatado,
+        "inep": inep_val,
+        "valor_divida": divida_fmt if (data.get("tem_divida") == "sim" and data.get("valor_divida")) else None,
+        "tem_divida_alta": tem_divida_alta,
+        "marcas_com_inviab": bool(marcas_com_inviab),
+        "nomes_marcas_inviab": nomes_marcas_inviab,
+    }
 
     # 1. Posta a MENSAGEM ÚNICA no canal
     temp_ticket = {
@@ -845,6 +865,10 @@ def handle_submission(ack, body, client):
         "status": "pending",
         "details_text": unified_quote_text,
         "main_text_base": unified_quote_text,
+        "extra_data": extra_ticket_data,
+        "tem_divida_alta": tem_divida_alta,
+        "marcas_com_inviab": bool(marcas_com_inviab),
+        "valor_divida": extra_ticket_data["valor_divida"],
         "approvals": {
             apprv["key"]: {
                 "key": apprv["key"],
@@ -852,6 +876,7 @@ def handle_submission(ack, body, client):
                 "short_label": apprv["short_label"],
                 "approver_id": apprv.get("approver_id") or "",
                 "approver_name": apprv["approver_name"],
+                "scope_reason": apprv.get("scope_reason", ""),
                 "status": "pending",
             }
             for apprv in approvals_list
@@ -885,6 +910,7 @@ def handle_submission(ack, body, client):
         approvals_list=approvals_list,
         main_text_base=unified_quote_text,
         thread_permalink=thread_permalink,
+        extra_data=extra_ticket_data,
     )
     update_ticket_card_ts(ticket["key"], thread_ts)
 
@@ -953,27 +979,27 @@ def handle_dm_approval_action(ack, body, client):
         res = approve_step(ticket_key, approval_key, user_id, user_name)
         updated_ticket = res["ticket"]
 
-        # Atualiza a DM in-place: remove botões e estampa a confirmação
+        # Atualiza a DM in-place: remove botões e estampa a confirmação com escaneabilidade
         dm_updated_blocks = [
             {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "✅ Decisão Registrada com Sucesso", "emoji": True}
+            },
+            {
                 "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        f"✅ *Você APROVOU esta solicitação com sucesso!*\n"
-                        f"• *Escola:* {ticket['escola']}\n"
-                        f"• *Alçada:* {role_title}\n"
-                        f"• *Data/Hora:* {now_str}\n\n"
-                        f"Sua decisão foi espelhada em tempo real no canal de negociação."
-                    )
-                }
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*🏫 Escola:*\n{ticket['escola']}"},
+                    {"type": "mrkdwn", "text": f"*📋 Alçada:*\n{role_title}"},
+                    {"type": "mrkdwn", "text": f"*👤 Decisor:*\n@{user_name}"},
+                    {"type": "mrkdwn", "text": f"*⏱️ Horário:*\n{now_str}"},
+                ]
             },
             {
                 "type": "context",
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"🔗 <{ticket.get('thread_permalink') or '#'}|Ver thread no canal de negociação>"
+                        "text": f"✅ Sua decisão foi espelhada em tempo real na thread do canal. • 🔗 <{ticket.get('thread_permalink') or '#'}|Ver negociação>"
                     }
                 ]
             }
@@ -987,6 +1013,18 @@ def handle_dm_approval_action(ack, body, client):
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar mensagem na DM: {e}")
+
+        # Feedback em tempo real na DM privada do Consultor
+        try:
+            send_consultor_progress_dm(
+                client=client,
+                ticket=updated_ticket,
+                last_approval_key=approval_key,
+                actor_id=user_id,
+                actor_name=user_name,
+            )
+        except Exception as e:
+            logger.error(f"Erro ao enviar feedback DM ao consultor: {e}")
 
         # Espelhamento imediato na Thread pública
         try:
@@ -1141,6 +1179,18 @@ def handle_thread_approval_action(ack, body, client):
         thread_ts=ticket["thread_ts"],
         text=f"✅ *{apprv['role_title']}* aprovada com sucesso por <@{user_id}> em {now_str}."
     )
+
+    # Feedback em tempo real na DM privada do Consultor
+    try:
+        send_consultor_progress_dm(
+            client=client,
+            ticket=updated_ticket,
+            last_approval_key=approval_key,
+            actor_id=user_id,
+            actor_name=user_name,
+        )
+    except Exception as e:
+        logger.error(f"Erro ao enviar feedback DM ao consultor: {e}")
 
     if res.get("all_completed"):
         client.chat_postMessage(
@@ -1356,23 +1406,29 @@ def handle_view_reprovar_ticket(ack, body, client, view):
     except Exception as e:
         logger.warning(f"Erro ao atualizar post principal pós-reprovação: {e}")
 
-    # 5. Se veio da DM privada, atualiza o card da DM in-place
+    # 5. Se veio da DM privada, atualiza o card da DM in-place com escaneabilidade
     if is_from_dm and dm_message_ts:
         try:
             target_dm_ch = dm_channel_id or user_id
             dm_blocks = [
                 {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "❌ Decisão Registrada: Reprovada", "emoji": True}
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*🏫 Escola:*\n{escola}"},
+                        {"type": "mrkdwn", "text": f"*📋 Alçada:*\n{role_title}"},
+                        {"type": "mrkdwn", "text": f"*👤 Decisor:*\n@{user_name}"},
+                        {"type": "mrkdwn", "text": f"*⏱️ Horário:*\n{now_str}"},
+                    ]
+                },
+                {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": (
-                            f"❌ *Você REPROVOU esta solicitação comercial.*\n"
-                            f"• *Escola:* {escola}\n"
-                            f"• *Alçada:* {role_title}\n"
-                            f"• *Motivo:* *{reason_label}*{detalhes_txt}\n"
-                            f"• *Data/Hora:* {now_str}\n\n"
-                            f"O consultor responsável ({consultor_tag}) foi formalmente marcado na thread e o ticket foi encerrado."
-                        )
+                        "text": f"*Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n_O consultor ({consultor_tag}) foi notificado na DM e na thread com seus apontamentos._"
                     }
                 },
                 {
@@ -1393,6 +1449,23 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar DM pós-reprovação: {e}")
+
+    # 6. Notifica o consultor responsável em tempo real na DM privada
+    try:
+        rejection_payload = {
+            "role_title": role_title,
+            "rejected_by_name": user_name,
+            "reason_label": reason_label,
+            "details": detalhes.strip(),
+        }
+        send_consultor_rejection_dm(
+            client=client,
+            ticket=updated_ticket,
+            rejection_data=rejection_payload,
+            fallback_user_id=user_id,
+        )
+    except Exception as e:
+        logger.error(f"Erro ao enviar DM de reprovação ao consultor: {e}")
 
 
 # =========================================================================
@@ -1441,6 +1514,33 @@ def handle_btn_triagem_substituicao(ack, body, client):
         channel_id=channel_id,
     )
     safe_views_open(client, body["trigger_id"], modal)
+
+
+@app.action("btn_triagem_cobrar_ticket")
+def handle_btn_triagem_cobrar_ticket(ack, body, client):
+    """
+    Ação acionada pelo botão da @triagem dentro da thread para cobrar pendências deste ticket específico.
+    """
+    ack()
+    user_id = body["user"]["id"]
+    user_name = body["user"].get("name") or body["user"].get("username") or "Triagem"
+    channel_id = body["channel"]["id"]
+    ticket_key = body["actions"][0].get("value", "")
+
+    if not is_user_triagem(user_id, user_name):
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text="⛔ *Acesso Restrito ao Perfil @triagem:*\nApenas membros autorizados da Triagem têm permissão para cobrar pendências deste ticket."
+        )
+        return
+
+    res = cobrar_pendencias_de_ticket(client, ticket_key, user_id)
+    client.chat_postEphemeral(
+        channel=channel_id,
+        user=user_id,
+        text=res.get("message", "Cobrança de pendências realizada com sucesso.")
+    )
 
 
 @app.command("/substituir-aprovador")
