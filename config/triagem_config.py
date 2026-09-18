@@ -8,7 +8,9 @@ Permite definir quais usuários do Slack têm autorização para:
 import os
 from typing import List
 
-USE_MOCK_USERS = os.environ.get("USE_MOCK_USERS", "true").lower() == "true"
+# ⚠️ Nunca default para "true": liberaria @triagem e aprovação para qualquer usuário do
+# Slack. Defina como "true" apenas via .env em ambiente de desenvolvimento/homologação.
+USE_MOCK_USERS = os.environ.get("USE_MOCK_USERS", "false").lower() == "true"
 TEST_ALLOW_SELF_APPROVAL = os.environ.get("TEST_ALLOW_SELF_APPROVAL", "false").lower() == "true"
 
 # Lista de IDs de usuários Slack com perfil oficial de @triagem
@@ -41,11 +43,10 @@ def is_user_triagem(user_id: str, user_name: str = "") -> bool:
     if user_id in TRIAGEM_USER_IDS:
         return True
 
-    # Verifica se o nome contém marcação de triagem
+    # Fallback transitório por nome, enquanto TRIAGEM_USER_IDS não está com os IDs reais
+    # preenchidos. Não checa mais o substring genérico "triagem": qualquer usuário poderia
+    # se autopromover apenas incluindo a palavra no próprio nome/username do Slack.
     u_lower = (user_name or "").lower()
-    if "@triagem" in u_lower or "triagem" in u_lower:
-        return True
-
     for m in TRIAGEM_MEMBERS_NAMES:
         if m.lower() in u_lower:
             return True

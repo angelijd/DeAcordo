@@ -2,14 +2,13 @@
 Serviço de Mensagens Diretas (DM Privada) para Aprovação Executiva e Contingência.
 """
 
-import os
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-logger = logging.getLogger("dm_approval_service")
+from config.triagem_config import USE_MOCK_USERS
 
-USE_MOCK_USERS = os.environ.get("USE_MOCK_USERS", "true").lower() == "true"
+logger = logging.getLogger("dm_approval_service")
 
 
 def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str):
