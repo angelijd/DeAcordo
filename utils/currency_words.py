@@ -85,7 +85,23 @@ def numero_por_extenso(n: int) -> str:
 
 
 def parse_currency_str(valor: any) -> Optional[float]:
-    """Interpreta qualquer formato de string monetária de forma resiliente."""
+    """
+    Interpreta qualquer formato de string monetária brasileira ou internacional de forma resiliente.
+    Suporta:
+      '10000' -> 10000.0
+      '10.000' -> 10000.0
+      '10.000,00' -> 10000.0
+      '10.000.00' -> 10000.0 (teclado numérico com ponto decimal)
+      '10000,00' -> 10000.0
+      '10000.00' -> 10000.0
+      '10k' -> 10000.0
+      '1000000' -> 1000000.0
+      '1.000.000,00' -> 1000000.0
+      '1.000.000.00' -> 1000000.0
+      '1m' -> 1000000.0
+      '150.000,50' -> 150000.5
+      '150.000.50' -> 150000.5
+    """
     if valor is None:
         return None
     if isinstance(valor, (int, float)):
@@ -96,66 +112,41 @@ def parse_currency_str(valor: any) -> Optional[float]:
         return None
 
     val_lower = val_str.lower()
-    if val_lower.endswith("k"):
-        num_part = val_lower[:-1].replace(",", ".")
+    if val_lower.endswith("k") or val_lower.endswith("mil"):
+        num = re.sub(r"[^\d,\.]", "", val_lower).replace(",", ".")
         try:
-            return float(num_part) * 1000
+            return float(num) * 1000.0
         except ValueError:
             return None
-    if val_lower.endswith("m") or val_lower.endswith("mi"):
-        num_part = val_lower.rstrip("mi").rstrip("m").replace(",", ".")
+    if val_lower.endswith("m") or val_lower.endswith("mi") or "milh" in val_lower:
+        num = re.sub(r"[^\d,\.]", "", val_lower).replace(",", ".")
         try:
-            return float(num_part) * 1_000_000
-        except ValueError:
-            return None
-
-    # Caso 1: Contém ponto e vírgula (ex: 150.000,00 ou 150,000.00)
-    if "." in val_str and "," in val_str:
-        last_dot = val_str.rfind(".")
-        last_comma = val_str.rfind(",")
-        if last_dot < last_comma:
-            # Formato BR: 150.000,00 -> vírgula decimal
-            clean = val_str.replace(".", "").replace(",", ".")
-        else:
-            # Formato US: 150,000.00 -> ponto decimal
-            clean = val_str.replace(",", "")
-        try:
-            return float(clean)
+            return float(num) * 1_000_000.0
         except ValueError:
             return None
 
-    # Caso 2: Apenas vírgula (ex: 150000,00 ou 150,50 ou 150,000)
-    if "," in val_str:
-        parts = val_str.split(",")
-        if len(parts) == 2 and len(parts[1]) == 3 and parts[1] == "000":
-            # Ex: 150,000 -> 150 mil
-            clean = "".join(parts)
-        else:
-            clean = val_str.replace(",", ".")
-        try:
-            return float(clean)
-        except ValueError:
-            return None
+    # Detecta se há separador de centavos no final (.00, ,00, ,50, .50, ,5, .5, etc.)
+    last_dot = val_str.rfind(".")
+    last_comma = val_str.rfind(",")
+    last_sep = max(last_dot, last_comma)
 
-    # Caso 3: Apenas ponto (ex: 150.000 ou 1.500.000 ou 150000.50)
-    if "." in val_str:
-        parts = val_str.split(".")
-        if all(len(p) == 3 for p in parts[1:]):
-            # Formato BR de milhar: 150.000 ou 1.500.000
-            clean = "".join(parts)
-        elif len(parts) == 2 and len(parts[1]) <= 2:
-            # Decimal US: 150000.50
-            clean = val_str
-        else:
-            clean = "".join(parts)
-        try:
-            return float(clean)
-        except ValueError:
-            return None
+    if last_sep != -1:
+        after = val_str[last_sep + 1:]
+        before = val_str[:last_sep]
+        # Se após o último separador houver 1 ou 2 dígitos, são centavos!
+        if len(after) in (1, 2) and after.isdigit():
+            int_digits = re.sub(r"\D", "", before)
+            if not int_digits:
+                int_digits = "0"
+            cents = int(after) if len(after) == 2 else int(after) * 10
+            return float(int_digits) + (cents / 100.0)
 
-    # Caso 4: Apenas dígitos
+    # Caso contrário, todos os separadores são de milhar (ou número puro sem centavos)
+    digits = re.sub(r"\D", "", val_str)
+    if not digits:
+        return None
     try:
-        return float(val_str)
+        return float(digits)
     except ValueError:
         return None
 
@@ -197,37 +188,19 @@ def valor_para_extenso(valor: any) -> str:
 
 def format_real_input(raw: any) -> str:
     """
-    Mascara automaticamente valores monetários enquanto o usuário digita.
-    Adiciona pontos de milhar e vírgula de centavos fixos no formato brasileiro.
-    Exemplos:
-      '100000' -> '100.000,00'
-      '100.000' -> '100.000,00'
-      '100.000,00' -> '100.000,00'
-      '150000' -> '150.000,00'
-      '150000,50' -> '150.000,50'
+    Formata valores monetários de forma padronizada no formato brasileiro:
+      10000 -> 10.000,00
+      10.000 -> 10.000,00
+      10.000,00 -> 10.000,00
+      10.000.00 -> 10.000,00
+      10k -> 10.000,00
+      1000000 -> 1.000.000,00
+      1m -> 1.000.000,00
     """
-    if raw is None:
+    val_float = parse_currency_str(raw)
+    if val_float is None:
         return ""
-    import re
-    s = str(raw).strip().replace("R$", "").replace("r$", "").strip()
-    if not s:
-        return ""
-
-    # Se o usuário digitou vírgula com centavos explícitos (ex: 150000,50)
-    if "," in s:
-        parts = s.split(",")
-        if len(parts) == 2 and len(parts[1]) in (1, 2) and parts[1] != "00":
-            int_part = re.sub(r"\D", "", parts[0])
-            cent_part = re.sub(r"\D", "", parts[1])[:2].ljust(2, "0")
-            val_int = int(int_part) if int_part else 0
-            return f"{val_int:,}".replace(",", ".") + f",{cent_part}"
-
-    if s.endswith(",00") or s.endswith(".00"):
-        s = s[:-3]
-
-    digits = re.sub(r"\D", "", s)
-    if not digits:
-        return ""
-    val_int = int(digits)
-    return f"{val_int:,}".replace(",", ".") + ",00"
+    inteiro = int(val_float)
+    centavos = int(round((val_float - inteiro) * 100))
+    return f"{inteiro:,}".replace(",", ".") + f",{centavos:02d}"
 

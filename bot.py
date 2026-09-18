@@ -40,7 +40,7 @@ from views.modals import (
     MARCAS_CORE,
     MARCAS_PLUS,
 )
-from utils.currency_words import format_real_input
+from utils.currency_words import format_real_input, parse_currency_str, valor_para_extenso
 
 # Configura logs
 logging.basicConfig(level=logging.INFO)
@@ -437,9 +437,9 @@ def handle_currency_realtime_hint(ack, body, client):
     action_id = action.get("action_id", "")
     action_val = action.get("value", "")
     if action_id.startswith("acv_input"):
-        saved_values["acv"] = format_real_input(action_val) if action_val else ""
+        saved_values["acv"] = action_val
     elif action_id.startswith("valor_divida_input"):
-        saved_values["valor_divida"] = format_real_input(action_val) if action_val else ""
+        saved_values["valor_divida"] = action_val
 
     updated_modal = build_aprovacoes_modal(
         current_user_id=current_user_id,
@@ -586,9 +586,18 @@ def handle_submission(ack, body, client):
 
     if not data.get("acv"):
         errors["acv_block"] = "Informe o Valor do Contrato (ACV)."
+    else:
+        acv_parsed = parse_currency_str(data.get("acv"))
+        if acv_parsed is None or acv_parsed <= 0:
+            errors["acv_block"] = "Informe um valor de contrato válido (ex: 10000 ou 10.000,00)."
 
-    if data.get("tem_divida") == "sim" and not data.get("valor_divida"):
-        errors["valor_divida_block"] = "Informe o Valor da Dívida da Escola."
+    if data.get("tem_divida") == "sim":
+        if not data.get("valor_divida"):
+            errors["valor_divida_block"] = "Informe o Valor da Dívida da Escola."
+        else:
+            divida_parsed = parse_currency_str(data.get("valor_divida"))
+            if divida_parsed is None or divida_parsed < 0:
+                errors["valor_divida_block"] = "Informe um valor de dívida válido (ex: 50000 ou 50.000,00)."
 
     if not data.get("link_sf"):
         errors["link_sf_block"] = "Informe o Link da Oportunidade no SalesForce."
@@ -712,13 +721,10 @@ def handle_submission(ack, body, client):
     tem_divida_alta = False
     aprovador_bae = format_user_mention("Rafael Bae")
     if data.get("tem_divida") == "sim" and data.get("valor_divida"):
-        val_div_limpo = re.sub(r"[^\d,\.]", "", str(data["valor_divida"])).replace(".", "").replace(",", ".")
-        try:
-            if float(val_div_limpo) > 50000.0:
-                tem_divida_alta = True
-                aprovadores_para_marcar.add(aprovador_bae)
-        except ValueError:
-            pass
+        val_div_num = parse_currency_str(data.get("valor_divida")) or 0.0
+        if val_div_num > 50000.0:
+            tem_divida_alta = True
+            aprovadores_para_marcar.add(aprovador_bae)
 
     # Dados cadastrais e complementares
     cnpj_formatado = data.get('cnpj') or 'Não informado'
@@ -734,7 +740,7 @@ def handle_submission(ack, body, client):
 
     alunado_val = data.get('alunado') or '-'
     acv_val = data.get('acv') or '-'
-    acv_limpo = str(acv_val).replace("R$", "").strip()
+    acv_limpo = format_real_input(acv_val) if acv_val and acv_val != '-' else '-'
 
     # Links: SalesForce e Simulador
     link_sf = data.get('link_sf') or '-'

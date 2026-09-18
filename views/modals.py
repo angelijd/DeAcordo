@@ -420,21 +420,19 @@ def build_aprovacoes_modal(
     # 10. Valor do Contrato ACV (P10) - Com Destaque de Extenso Imediato
     # -------------------------------------------------------------
     raw_acv = saved_values.get("acv", "")
-    formatted_acv = format_real_input(raw_acv) if raw_acv else ""
     acv_elem = {
         "type": "plain_text_input",
         "action_id": "acv_input",
-        "placeholder": {"type": "plain_text", "text": "Ex: 150000 ou 150.000,00"},
+        "placeholder": {"type": "plain_text", "text": "Ex: 10000 ou 10.000,00"},
         "dispatch_action_config": {
             "trigger_actions_on": ["on_character_entered", "on_enter_pressed"]
         },
     }
-    if formatted_acv:
-        acv_elem["initial_value"] = formatted_acv
-    elif raw_acv:
+    if raw_acv:
         acv_elem["initial_value"] = str(raw_acv)
 
-    extenso_acv = valor_para_extenso(formatted_acv or raw_acv)
+    extenso_acv = valor_para_extenso(raw_acv)
+    formatted_display = format_real_input(raw_acv)
 
     blocks.append({
         "type": "input",
@@ -445,14 +443,14 @@ def build_aprovacoes_modal(
     })
 
     # Exibe banner destacado com o valor por extenso
-    if extenso_acv:
+    if extenso_acv and formatted_display:
         blocks.append({
             "type": "context",
             "block_id": "acv_extenso_context",
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"💵 *Valor do contrato:* *{extenso_acv}*",
+                    "text": f"💵 *Valor do contrato:* *{extenso_acv}* (R$ {formatted_display})",
                 }
             ],
         })
@@ -463,7 +461,7 @@ def build_aprovacoes_modal(
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": "ℹ️ _Digite os números do valor do contrato para formatação automática._",
+                    "text": "💡 *Dica:* Digite o valor em números (ex: `10000` ou `10.000,00` ou `100k`). O sistema valida o extenso em tempo real para evitar erros.",
                 }
             ],
         })
@@ -500,7 +498,6 @@ def build_aprovacoes_modal(
     # Se a escola tiver dívida, exibe campo obrigatório de Valor da Dívida com formatação automática
     if is_divida:
         raw_divida = saved_values.get("valor_divida") or saved_values.get("divida") or ""
-        formatted_divida = format_real_input(raw_divida) if raw_divida else ""
         divida_val_elem = {
             "type": "plain_text_input",
             "action_id": "valor_divida_input",
@@ -509,12 +506,11 @@ def build_aprovacoes_modal(
                 "trigger_actions_on": ["on_character_entered", "on_enter_pressed"]
             },
         }
-        if formatted_divida:
-            divida_val_elem["initial_value"] = formatted_divida
-        elif raw_divida:
+        if raw_divida:
             divida_val_elem["initial_value"] = str(raw_divida)
 
-        extenso_divida = valor_para_extenso(formatted_divida or raw_divida)
+        extenso_divida = valor_para_extenso(raw_divida)
+        formatted_divida_display = format_real_input(raw_divida)
 
         blocks.append({
             "type": "input",
@@ -524,14 +520,14 @@ def build_aprovacoes_modal(
             "label": {"type": "plain_text", "text": "Valor da Dívida:"},
         })
 
-        if extenso_divida:
+        if extenso_divida and formatted_divida_display:
             blocks.append({
                 "type": "context",
                 "block_id": "divida_extenso_context",
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"💵 *Dívida:* *{extenso_divida}*",
+                        "text": f"💵 *Dívida confirmada:* *{extenso_divida}* (R$ {formatted_divida_display})",
                     }
                 ],
             })
@@ -770,10 +766,10 @@ def extract_modal_values(view_state: Dict[str, Any], num_exceptions: int) -> Dic
     res["inep"] = get_val_by_prefix("inep_block")
     res["alunado"] = get_val("alunado_block", "alunado_input")
     raw_acv_val = get_val_by_prefix("acv_block") or get_val("acv_block", "acv_input")
-    res["acv"] = format_real_input(raw_acv_val) if raw_acv_val else raw_acv_val
+    res["acv"] = raw_acv_val if raw_acv_val is not None else ""
     res["tem_divida"] = get_selected("tem_divida_block", "tem_divida_select")
     raw_div_val = get_val_by_prefix("valor_divida_block") or get_val("valor_divida_block", "valor_divida_input")
-    res["valor_divida"] = format_real_input(raw_div_val) if raw_div_val else raw_div_val
+    res["valor_divida"] = raw_div_val if raw_div_val is not None else ""
     res["link_sf"] = get_val("link_sf_block", "link_sf_input")
 
     # Inviabilidade personalizada por marca
