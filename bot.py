@@ -106,6 +106,23 @@ def safe_views_update(client, view_id: str, modal: dict):
         raise e
 
 
+def check_approval_authorization(apprv: dict, user_id: str) -> tuple[bool, bool]:
+    """
+    Verifica se `user_id` pode aprovar/reprovar a alçada `apprv`.
+    Nega por padrão quando não há approver_id real do Slack mapeado, em vez de liberar
+    para qualquer pessoa - evita bypass de governança enquanto approvers_map.py não
+    estiver com os IDs reais preenchidos.
+    Retorna (is_authorized, is_unmapped).
+    """
+    expected_approver_id = apprv.get("approver_id") or ""
+    allow_self = os.environ.get("TEST_ALLOW_SELF_APPROVAL", "false").lower() == "true"
+
+    if expected_approver_id and expected_approver_id.startswith(("U", "W")):
+        return (user_id == expected_approver_id or allow_self, False)
+
+    return (allow_self, True)
+
+
 # =========================================================================
 # 1. GATILHOS PARA ABRIR O FORMULÁRIO (Comandos, Atalhos e Botões)
 # =========================================================================
@@ -549,6 +566,8 @@ def handle_submission(ack, body, client):
         errors["frente_block"] = "Selecione uma Frente."
     if not data.get("lider"):
         errors["lider_block"] = "Informe o Líder direto do Consultor."
+    elif data.get("lider") == (data.get("consultor") or body["user"]["id"]):
+        errors["lider_block"] = "O Líder Direto não pode ser o mesmo usuário do Consultor."
     if not data.get("marcas"):
         errors["marcas_block"] = "Selecione pelo menos uma Marca."
 
@@ -975,6 +994,18 @@ def handle_dm_approval_action(ack, body, client):
     short_label = apprv.get("short_label", "Aprovação")
     now_str = datetime.now().strftime("%d/%m às %Hh%M")
 
+    is_authorized, is_unmapped = check_approval_authorization(apprv, user_id)
+    if not is_authorized:
+        if is_unmapped:
+            auth_text = (
+                "⚠️ Esta alçada ainda não possui um aprovador com ID de Slack configurado. "
+                "Peça para a @triagem designar um substituto com `/substituir-aprovador`."
+            )
+        else:
+            auth_text = "⚠️ Você não tem permissão para decidir sobre esta alçada."
+        client.chat_postEphemeral(channel=dm_channel_id, user=user_id, text=auth_text)
+        return
+
     if is_approved:
         res = approve_step(ticket_key, approval_key, user_id, user_name)
         updated_ticket = res["ticket"]
@@ -1124,25 +1155,21 @@ def handle_thread_approval_action(ack, body, client):
     if not apprv:
         return
 
-    expected_approver_id = apprv.get("approver_id") or ""
     expected_name = apprv.get("approver_name") or "Aprovador Designado"
-    consultor_id = ticket.get("consultor_id")
 
-    allow_self = os.environ.get("TEST_ALLOW_SELF_APPROVAL", "false").lower() == "true"
-    is_authorized = True
-
-    if expected_approver_id and expected_approver_id.startswith(("U", "W")):
-        if user_id != expected_approver_id and not allow_self:
-            is_authorized = False
-    else:
-        if user_id == consultor_id and not allow_self:
-            is_authorized = False
-
+    is_authorized, is_unmapped = check_approval_authorization(apprv, user_id)
     if not is_authorized:
+        if is_unmapped:
+            auth_text = (
+                f"⚠️ *{expected_name}* ainda não possui um ID de Slack configurado para esta alçada. "
+                f"Peça para a @triagem designar um aprovador com `/substituir-aprovador` antes de decidir por aqui."
+            )
+        else:
+            auth_text = f"⚠️ Você não tem permissão para aprovar este item. Apenas @{expected_name} pode dar este aceite."
         client.chat_postEphemeral(
             channel=ticket["channel_id"],
             user=user_id,
-            text=f"⚠️ Você não tem permissão para aprovar este item. Apenas @{expected_name} pode dar este aceite."
+            text=auth_text
         )
         return
 
@@ -1247,25 +1274,21 @@ def handle_thread_reprovar_action(ack, body, client):
     if not apprv:
         return
 
-    expected_approver_id = apprv.get("approver_id") or ""
     expected_name = apprv.get("approver_name") or "Aprovador Designado"
-    consultor_id = ticket.get("consultor_id")
 
-    allow_self = os.environ.get("TEST_ALLOW_SELF_APPROVAL", "false").lower() == "true"
-    is_authorized = True
-
-    if expected_approver_id and expected_approver_id.startswith(("U", "W")):
-        if user_id != expected_approver_id and not allow_self:
-            is_authorized = False
-    else:
-        if user_id == consultor_id and not allow_self:
-            is_authorized = False
-
+    is_authorized, is_unmapped = check_approval_authorization(apprv, user_id)
     if not is_authorized:
+        if is_unmapped:
+            auth_text = (
+                f"⚠️ *{expected_name}* ainda não possui um ID de Slack configurado para esta alçada. "
+                f"Peça para a @triagem designar um aprovador com `/substituir-aprovador` antes de decidir por aqui."
+            )
+        else:
+            auth_text = f"⚠️ Você não tem permissão para reprovar este item. Apenas @{expected_name} pode tomar esta decisão."
         client.chat_postEphemeral(
             channel=ticket["channel_id"],
             user=user_id,
-            text=f"⚠️ Você não tem permissão para reprovar este item. Apenas @{expected_name} pode tomar esta decisão."
+            text=auth_text
         )
         return
 
@@ -1606,6 +1629,11 @@ def handle_view_triagem_substituicao(ack, body, client, view):
     user_id = body["user"]["id"]
     user_name = body["user"].get("name") or body["user"].get("username") or "Triagem"
 
+    if not is_user_triagem(user_id, user_name):
+        logger.warning(f"Usuário {user_id} tentou submeter substituição sem permissão de @triagem.")
+        ack()
+        return
+
     # 1. Alçada
     alcada_elem = values.get("alcada_substituicao_block", {}).get("alcada_substituicao_select", {})
     alcada_key = alcada_elem.get("selected_option", {}).get("value")
@@ -1627,12 +1655,19 @@ def handle_view_triagem_substituicao(ack, body, client, view):
     motivo_elem = values.get("motivo_ausencia_block", {}).get("motivo_ausencia_input", {})
     motivo_ausencia = (motivo_elem.get("value") or "").strip()
 
+    ticket_for_validation = get_ticket(ticket_key)
+    consultor_id_check = ticket_for_validation.get("consultor_id") if ticket_for_validation else None
+
     errors = {}
     if not alcada_key or alcada_key == "none":
         errors["alcada_substituicao_block"] = "Selecione uma alçada pendente para substituição."
 
     if not novo_aprovador_id:
         errors["novo_aprovador_block"] = "Selecione o aprovador substituto."
+    elif novo_aprovador_id == user_id:
+        errors["novo_aprovador_block"] = "Você não pode se autodesignar como aprovador substituto."
+    elif consultor_id_check and novo_aprovador_id == consultor_id_check:
+        errors["novo_aprovador_block"] = "O consultor responsável pela solicitação não pode ser o aprovador substituto."
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     if not until_date:
