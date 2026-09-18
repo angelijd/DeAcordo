@@ -105,10 +105,15 @@ def parse_currency_str(valor: any) -> Optional[float]:
     if valor is None:
         return None
     if isinstance(valor, (int, float)):
-        return float(valor)
+        return float(valor) if valor >= 0 else None
 
     val_str = str(valor).strip().replace("R$", "").replace("r$", "").replace(" ", "")
     if not val_str:
+        return None
+
+    # Valores monetários negativos não são válidos neste domínio (ACV, dívida);
+    # rejeita em vez de descartar o sinal silenciosamente.
+    if val_str.startswith("-"):
         return None
 
     val_lower = val_str.lower()

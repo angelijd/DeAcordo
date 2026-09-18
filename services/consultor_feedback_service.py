@@ -4,13 +4,12 @@ Garante visibilidade proativa com stepper visual de alçadas, celebração de co
 e orientações claras e empáticas em caso de reprovação comercial.
 """
 
-import os
 import logging
 from typing import Dict, Any, Tuple, Optional
 
-logger = logging.getLogger("consultor_feedback_service")
+from config.triagem_config import USE_MOCK_USERS
 
-USE_MOCK_USERS = os.environ.get("USE_MOCK_USERS", "true").lower() == "true"
+logger = logging.getLogger("consultor_feedback_service")
 
 
 def _resolve_consultor_target(ticket: Dict[str, Any], fallback_user_id: str = "") -> Tuple[Optional[str], bool, str]:
