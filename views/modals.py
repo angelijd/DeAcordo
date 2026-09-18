@@ -1,12 +1,10 @@
-import os
 import re
 import json
 from typing import Dict, Any, Optional
 from config.exceptions_rules import ALL_EXCEPTIONS_LIST
 from config.mock_users import MOCK_CONSULTORES, MOCK_LIDERES, MOCK_APROVADORES
+from config.triagem_config import USE_MOCK_USERS
 from utils.currency_words import valor_para_extenso, format_real_input
-
-USE_MOCK_USERS = os.environ.get("USE_MOCK_USERS", "true").lower() == "true"
 
 # Lista de opções de Frente
 FRENTES_OPTIONS = [
