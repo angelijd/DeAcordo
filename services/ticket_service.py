@@ -1,12 +1,62 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("ticket_service")
 
 TICKETS_FILE = os.path.join(os.path.dirname(__file__), "..", "tickets_state.json")
+
+BR_TZ = ZoneInfo("America/Sao_Paulo")
+
+# Aprovadores com SLA diferenciado (2 dias úteis em vez do padrão de 24h)
+SLA_2_DIAS_UTEIS_APPROVERS = {"Rafael Bae"}
+
+
+def _add_business_days(start: datetime, business_days: int) -> datetime:
+    """Soma dias úteis (seg-sex) a um datetime, preservando o horário."""
+    current = start
+    added = 0
+    while added < business_days:
+        current += timedelta(days=1)
+        if current.weekday() < 5:  # 0=seg ... 4=sex
+            added += 1
+    return current
+
+
+def _compute_sla_due_at(approver_name: str) -> str:
+    """
+    Calcula o prazo (SLA) de resposta de um aprovador a partir de agora:
+    - 2 dias úteis para aprovadores da lista SLA_2_DIAS_UTEIS_APPROVERS (ex: Rafael Bae)
+    - 24h corridas (padrão) para os demais
+    Retorna timestamp ISO em horário de Brasília.
+    """
+    now_br = datetime.now(BR_TZ)
+    if approver_name in SLA_2_DIAS_UTEIS_APPROVERS:
+        due = _add_business_days(now_br, 2)
+    else:
+        due = now_br + timedelta(hours=24)
+    return due.isoformat()
+
+
+def _is_sla_vencido(approval: Dict[str, Any]) -> bool:
+    """Verifica se o prazo de SLA de uma alçada pendente já venceu."""
+    due_str = approval.get("sla_due_at")
+    if not due_str:
+        return False
+    try:
+        due = datetime.fromisoformat(due_str)
+    except ValueError:
+        return False
+    return datetime.now(BR_TZ) >= due
+
+
+def _dentro_da_janela_de_cobranca() -> bool:
+    """Só permite disparo de cobrança entre 08h e 17h no horário de Brasília."""
+    hora_atual = datetime.now(BR_TZ).hour
+    return 8 <= hora_atual < 17
 
 def load_tickets() -> Dict[str, Any]:
     """Carrega o arquivo de estado dos tickets"""
@@ -86,6 +136,7 @@ def create_ticket(
             "approved_by_id": None,
             "approved_by_name": None,
             "approved_at": None,
+            "sla_due_at": _compute_sla_due_at(eff_name),
             "is_substituted": is_sub,
             "original_approver_name": orig_name if is_sub else None,
             "original_approver_id": orig_id if is_sub else None,
@@ -513,51 +564,53 @@ def get_pending_tickets() -> List[Dict[str, Any]]:
 
 def executar_cobranca_pendencias(client) -> int:
     """
-    Varre os tickets ativos e cobra cirurgicamente os aprovadores que ainda não deram o aceite.
+    Varre os tickets ativos e cobra, apenas via DM, os aprovadores cujo prazo de SLA
+    já venceu (24h padrão, ou 2 dias úteis para aprovadores com SLA diferenciado).
+    Só dispara dentro da janela 08h-17h (horário de Brasília).
     Retorna o total de lembretes enviados.
     """
+    if not _dentro_da_janela_de_cobranca():
+        logger.info("Cobrança inteligente ignorada: fora da janela permitida (08h-17h, horário de Brasília).")
+        return 0
+
     pending_tickets = get_pending_tickets()
     total_cobrados = 0
 
     for t in pending_tickets:
-        channel_id = t["channel_id"]
-        thread_ts = t["thread_ts"]
+        escola = t.get("escola", "Escola")
 
-        pendentes = []
-        aprovados = []
-
-        for apprv in t.get("approvals", {}).values():
-            if apprv["status"] == "pending":
-                pendentes.append(apprv)
-            else:
-                aprovados.append(apprv["short_label"])
-
-        if not pendentes:
-            continue
-
+        aprovados = [
+            a["short_label"] for a in t.get("approvals", {}).values() if a["status"] != "pending"
+        ]
         aprovados_str = ", ".join(aprovados) if aprovados else "nenhuma alçada ainda"
 
-        for p in pendentes:
+        for p in t.get("approvals", {}).values():
+            if p["status"] != "pending":
+                continue
+            if not _is_sla_vencido(p):
+                continue
+
             approver_id = p.get("approver_id")
             approver_name = p.get("approver_name")
-            mention = f"<@{approver_id}>" if approver_id and approver_id.startswith(("U", "W")) else f"@{approver_name}"
+            if not (approver_id and approver_id.startswith(("U", "W"))):
+                logger.warning(f"Cobrança de SLA ignorada para {approver_name}: sem ID de Slack válido para DM.")
+                continue
 
             if aprovados:
-                msg = f"🔔 *Lembrete:* {mention}, o {aprovados_str} já aprovaram. Falta apenas o seu clique de *{p['short_label']}* para liberar o contrato da *{t['escola']}*!"
+                msg = f"🔔 *Lembrete (SLA vencido):* o {aprovados_str} já aprovaram. Falta apenas o seu clique de *{p['short_label']}* para liberar o contrato da *{escola}*!"
             else:
-                msg = f"🔔 *Lembrete:* {mention}, a solicitação da *{t['escola']}* aguarda sua aprovação de *{p['short_label']}*."
+                msg = f"🔔 *Lembrete (SLA vencido):* a solicitação da *{escola}* aguarda sua aprovação de *{p['short_label']}* e o prazo já venceu."
 
             try:
                 client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_ts,
+                    channel=approver_id,
                     text=msg
                 )
                 total_cobrados += 1
             except Exception as e:
-                logger.error(f"Erro ao enviar cobrança para {mention}: {e}")
+                logger.error(f"Erro ao enviar cobrança por DM para {approver_name}: {e}")
 
-    logger.info(f"Cobrança inteligente concluída: {total_cobrados} lembretes enviados.")
+    logger.info(f"Cobrança inteligente concluída: {total_cobrados} lembrete(s) enviado(s) por DM.")
     return total_cobrados
 
 
