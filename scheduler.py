@@ -32,9 +32,9 @@ if __name__ == "__main__":
         rotina_cobranca()
     else:
         scheduler = BlockingScheduler()
-        # Agenda 2x ao dia: às 11:00 e às 17:00 de segunda a sexta-feira
-        trigger_11h = CronTrigger(hour=11, minute=0, day_of_week="mon-fri")
-        trigger_17h = CronTrigger(hour=17, minute=0, day_of_week="mon-fri")
+        # Agenda 2x ao dia: às 11:00 e às 17:00 de segunda a sexta-feira, horário de Brasília
+        trigger_11h = CronTrigger(hour=11, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo")
+        trigger_17h = CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo")
 
         scheduler.add_job(rotina_cobranca, trigger_11h, id="job_11h")
         scheduler.add_job(rotina_cobranca, trigger_17h, id="job_17h")
