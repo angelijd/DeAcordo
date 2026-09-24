@@ -3,3 +3,6 @@ google-genai>=1.0.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 apscheduler>=3.10.4
+
+# Opcional: só necessário quando BIGQUERY_PROJECT/DATASET/TABLE forem configurados no .env
+# google-cloud-bigquery>=3.25.0
