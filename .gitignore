@@ -11,6 +11,7 @@ __pycache__/
 # Local runtime state and logs
 tickets_state.json
 substitutions_state.json
+analytics_events.jsonl
 *.log
 
 # IDE & OS

@@ -171,6 +171,13 @@ def create_ticket(
     tickets[ticket_key] = ticket
     save_tickets(tickets)
     logger.info(f"Ticket {ticket_key} criado para '{escola}' com {len(approvals)} alçada(s).")
+
+    try:
+        from services.analytics_service import emit_ticket_created
+        emit_ticket_created(ticket)
+    except Exception as e:
+        logger.warning(f"Erro ao emitir evento de analytics (ticket_created): {e}")
+
     return ticket
 
 
@@ -221,6 +228,14 @@ def approve_step(
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
+
+    try:
+        from services.analytics_service import emit_approval_event, emit_ticket_completed
+        emit_approval_event(ticket, approval, "alcada_aprovada")
+        if all_completed:
+            emit_ticket_completed(ticket)
+    except Exception as e:
+        logger.warning(f"Erro ao emitir evento de analytics (approve_step): {e}")
 
     return {
         "success": True,
@@ -274,6 +289,13 @@ def reject_step(
     tickets[ticket_key] = ticket
     save_tickets(tickets)
 
+    try:
+        from services.analytics_service import emit_approval_event, emit_ticket_completed
+        emit_approval_event(ticket, approval, "alcada_reprovada")
+        emit_ticket_completed(ticket)
+    except Exception as e:
+        logger.warning(f"Erro ao emitir evento de analytics (reject_step): {e}")
+
     return {
         "success": True,
         "ticket": ticket,
@@ -317,6 +339,12 @@ def substitute_approver(
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
+
+    try:
+        from services.analytics_service import emit_approval_event
+        emit_approval_event(ticket, approval, "alcada_substituida")
+    except Exception as e:
+        logger.warning(f"Erro ao emitir evento de analytics (substitute_approver): {e}")
 
     return {
         "success": True,
