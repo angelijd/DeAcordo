@@ -3,7 +3,9 @@
  * linkados na coluna AF da aba "Aprovacoes" (a partir de 01/09/2026).
  *
  * Saída:
- *  - CSV no Drive (pasta raiz) com uma linha por série que tenha Preço família
+ *  - CSV no Drive (raiz) com uma linha por simulador; séries com Preço família
+ *    separadas por " | " (mesma ordem em todas as colunas)
+ *  - Nunca solicita acesso: links sem permissão são pulados e registrados no log
  *  - Aba "Log_Simulador" com links sem acesso / sem aba Simulador / erros
  *
  * Como usar: Extensões > Apps Script > cole este código > salve >
@@ -18,7 +20,7 @@ const CFG = {
   DATA_INICIO: new Date(2026, 8, 1),   // 01/09/2026
   COL_ABERTURA: 1,   // A
   COL_FRENTE: 2,     // B
-  COL_CONSULTOR: 4,  // D (na amostra é "SOLICITANTE"; a coluna "CONSULTOR" fica mais à direita)
+  COL_CONSULTOR: 4,  // D (SOLICITANTE = consultor)
   COL_LINK: 32,      // AF
   LINHA_INI: 38,
   LINHA_FIM: 57,     // linha 58 é "Total" (sem preço família)
@@ -85,11 +87,19 @@ function processar() {
       const faixa = sim.getRange(CFG.LINHA_INI, 2, n, 6); // B..G
       const vals = faixa.getValues();
       const disp = faixa.getDisplayValues();
+      const col = [[], [], [], [], []]; // série, tabela, desconto, negociado, família
       for (let r = 0; r < n; r++) {
         const g = vals[r][5];
         if (g === '' || g === null) continue;
-        estado.linhas.push([link, consultor, frente, disp[r][0],
-          disp[r][2], disp[r][3], disp[r][4], disp[r][5]]);
+        col[0].push(disp[r][0]);
+        col[1].push(disp[r][2]);
+        col[2].push(disp[r][3]);
+        col[3].push(disp[r][4]);
+        col[4].push(disp[r][5]);
+      }
+      if (col[0].length) {
+        // uma linha por simulador; várias séries ficam separadas por " | " na mesma ordem
+        estado.linhas.push([link, consultor, frente].concat(col.map(function (c) { return c.join(' | '); })));
       }
     } catch (e) {
       estado.log.push([linhaPlan, link, 'Erro: ' + e.message]);
@@ -110,7 +120,7 @@ function processar() {
 
 function finalizar_(estado) {
   apagarGatilhos_();
-  const cab = ['Link do simulador', 'Consultor', 'Frente', 'Série',
+  const cab = ['Link do simulador', 'Consultor', 'Frente', 'Séries',
     'Preço de tabela', 'Desconto', 'Preço negociado', 'Preço família'];
   const csv = [cab].concat(estado.linhas).map(function (r) {
     return r.map(function (c) { return '"' + String(c).replace(/"/g, '""') + '"'; }).join(',');
