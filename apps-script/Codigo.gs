@@ -5,7 +5,7 @@
  *  2) Renovação/ampliação: aba "Material opcional", col. T (19-87) e col. O (94-112), valor > 0
  *  3) Preço B2C    : aba Simulador, col. W, linhas 23-37, valor > 0
  *  4) Potencializadores (B2C): mesma leitura do cenário 2, mas UMA LINHA POR MATERIAL,
- *     com CNPJ, contrato do PIC, marca, série, material e preço; só o simulador mais
+ *     com CNPJ, link/versão do PIC, marca, série, material e preço; só o simulador mais
  *     recente por CNPJ + marca.
  *
  * Regras comuns: pedidos de QUALQUER data cujo CNPJ (col. H da Aprovacoes) esteja na aba
@@ -24,8 +24,12 @@ const GERAL = {
   DATA_INICIO: null,               // null = qualquer data (ou new Date(2026, 8, 1) para filtrar)
   FILTRAR_CNPJ: true,              // só pedidos cujo CNPJ está na aba abaixo
   ABA_CNPJS: 'CNPJs',              // lista de CNPJs: coluna A, a partir da linha 2
-  COL_CONTRATO_CNPJS: 2,           // coluna da aba CNPJs com o contrato do PIC (0 = não existe)
-  COL_ABERTURA: 1, COL_FRENTE: 2, COL_MARCA: 3, COL_CONSULTOR: 4, COL_CNPJ: 8, COL_LINK: 32,
+  // Colunas da aba Aprovacoes: A FRENTE, B MARCA(S), C SOLICITANTE, D REDE, E CNPJ, F FECHAMENTO,
+  // G SIMULADOR (link), H LINK THREAD, I OPORTUNIDADE, J ALUNADO, K ACV, L MARCAS INVIABILIDADE,
+  // M LINK DO PIC, N VERSÃO DO PIC.   (layout antigo: ABERTURA 1, FRENTE 2, MARCA 3, CONSULTOR 4, CNPJ 8, LINK 32)
+  COL_ABERTURA: 6,                 // FECHAMENTO: define o pedido "mais recente"
+  COL_FRENTE: 1, COL_MARCA: 2, COL_CONSULTOR: 3, COL_CNPJ: 5, COL_LINK: 7,
+  COL_LINK_PIC: 13, COL_VERSAO_PIC: 14,
   LIMITE_MS: 4.5 * 60 * 1000,      // tempo de cada rodada
   SALVAR_A_CADA: 20,               // registros
   PROGRESSO_A_CADA: 50,            // linhas percorridas
@@ -76,8 +80,8 @@ const JOBS = {
   pot: {
     id: 'pot', titulo: 'Potencializadores (preço B2C por material)', handler: 'processarPot', propProx: 'proxima_pot',
     abaResult: 'Resultado_Potencializadores', abaLog: 'Log_Potencializadores',
-    cabResult: ['Link do simulador', 'CNPJ', 'Contrato PIC', 'Marca', 'Frente', 'Origem', 'Série',
-      'ID do material', 'Material', 'Preço B2C potencializador', 'Consultor'],
+    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente',
+      'Origem', 'Série', 'ID do material', 'Material', 'Preço B2C potencializador', 'Consultor'],
     csvPrefixo: 'potencializadores_b2c_', ler: lerPot_,
     chaveDedupe: function (l) { return normCnpj_(l[GERAL.COL_CNPJ - 1]) + '|' + norm_(l[GERAL.COL_MARCA - 1]); },
   },
@@ -411,7 +415,6 @@ function lerPot_(planilha, l, link) {
   const aba = achaAba_(planilha, MAT.ABA);
   if (!aba) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + MAT.ABA + '" não encontrada'); return out; }
   const cnpj = normCnpj_(l[GERAL.COL_CNPJ - 1]);
-  const contrato = contratoDoCnpj_(cnpj);
   const secoes = [[MAT.REN, 'Renovação']];
   if (POT.INCLUIR_AMPLIACAO) secoes.push([MAT.AMP, 'Ampliação']);
   secoes.forEach(function (s) {
@@ -436,7 +439,7 @@ function lerPot_(planilha, l, link) {
       if (!(preco > 0)) continue;
       const material = limpa(vals[r][4]) || limpa(vals[r][0]) || '(sem material)';
       const idMat = POT.COL_ID_MATERIAL ? limpa(vals[r][POT.COL_ID_MATERIAL - 1]) : '';
-      out.linhas.push([link, cnpj, contrato, l[GERAL.COL_MARCA - 1], l[GERAL.COL_FRENTE - 1], origem,
+      out.linhas.push([link, cnpj, l[GERAL.COL_LINK_PIC - 1], l[GERAL.COL_VERSAO_PIC - 1], l[GERAL.COL_MARCA - 1], l[GERAL.COL_FRENTE - 1], origem,
         limpa(vals[r][3]), idMat, material, preco, l[GERAL.COL_CONSULTOR - 1]]);
     }
     if (comErro) out.logs.push('PLANILHA INCONSISTENTE: ' + origem + ': ' + comErro + ' célula(s) com erro (#REF! etc.)');
@@ -594,22 +597,6 @@ function lerCnpjs_() {
     const c = normCnpj_(r[0]); if (c) out.add(c);
   });
   return out;
-}
-/** Contrato do PIC de um CNPJ (coluna GERAL.COL_CONTRATO_CNPJS da aba CNPJs); vazio se não houver. */
-let CONTRATOS_ = null;
-function contratoDoCnpj_(cnpj) {
-  if (!CONTRATOS_) {
-    CONTRATOS_ = new Map();
-    const sh = SpreadsheetApp.getActive().getSheetByName(GERAL.ABA_CNPJS);
-    if (GERAL.COL_CONTRATO_CNPJS > 0 && sh && sh.getLastRow() >= 2) {
-      const n = Math.max(1, GERAL.COL_CONTRATO_CNPJS);
-      sh.getRange(2, 1, sh.getLastRow() - 1, n).getDisplayValues().forEach(function (r) {
-        const c = normCnpj_(r[0]), k = String(r[GERAL.COL_CONTRATO_CNPJS - 1] || '').trim();
-        if (c && k && !CONTRATOS_.has(c)) CONTRATOS_.set(c, k);
-      });
-    }
-  }
-  return CONTRATOS_.get(cnpj) || '';
 }
 /** Avisa no log quais CNPJs da lista não aparecem em nenhum pedido (ajuda a achar erro de digitação). */
 function registrarCnpjsSemPedido_(log, cnpjs, dados) {
