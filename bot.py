@@ -881,6 +881,16 @@ def handle_submission(ack, body, client):
         "tem_divida_alta": tem_divida_alta,
         "marcas_com_inviab": bool(marcas_com_inviab),
         "nomes_marcas_inviab": nomes_marcas_inviab,
+        # Campos que antes só existiam dentro do texto livre da thread (details_text);
+        # estruturados aqui para dar um schema estável, pronto para exportação tabular.
+        "frente": data.get("frente") or "",
+        "alunado": data.get("alunado"),
+        "link_sf": link_sf if link_sf != "-" else "",
+        "rede_grupo": rede_val,
+        "nome_rede": data.get("nome_rede") or "",
+        "cnpjs_rede": data.get("cnpjs_rede") or "",
+        "inviabilidades_pct": inviabilidades,
+        "simulador_link": link_simulador if link_simulador != "-" else "",
     }
 
     # 1. Posta a MENSAGEM ÚNICA no canal

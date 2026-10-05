@@ -1,4 +1,5 @@
 import os
+import csv
 import json
 import logging
 from datetime import datetime, timedelta
@@ -54,9 +55,9 @@ def _is_sla_vencido(approval: Dict[str, Any]) -> bool:
 
 
 def _dentro_da_janela_de_cobranca() -> bool:
-    """Só permite disparo de cobrança entre 08h e 17h no horário de Brasília."""
+    """Só permite disparo de cobrança entre 08h e 17h (inclusive) no horário de Brasília."""
     hora_atual = datetime.now(BR_TZ).hour
-    return 8 <= hora_atual < 17
+    return 8 <= hora_atual <= 17
 
 def load_tickets() -> Dict[str, Any]:
     """Carrega o arquivo de estado dos tickets"""
@@ -307,6 +308,7 @@ def substitute_approver(
 
     approval["approver_id"] = new_approver_id
     approval["approver_name"] = new_approver_name
+    approval["sla_due_at"] = _compute_sla_due_at(new_approver_name)
     approval["is_substituted"] = True
     approval["original_approver_name"] = original_name
     approval["original_approver_id"] = original_id
@@ -592,25 +594,37 @@ def executar_cobranca_pendencias(client) -> int:
 
             approver_id = p.get("approver_id")
             approver_name = p.get("approver_name")
-            if not (approver_id and approver_id.startswith(("U", "W"))):
-                logger.warning(f"Cobrança de SLA ignorada para {approver_name}: sem ID de Slack válido para DM.")
-                continue
+            has_real_id = bool(approver_id and approver_id.startswith(("U", "W")))
 
             if aprovados:
                 msg = f"🔔 *Lembrete (SLA vencido):* o {aprovados_str} já aprovaram. Falta apenas o seu clique de *{p['short_label']}* para liberar o contrato da *{escola}*!"
             else:
                 msg = f"🔔 *Lembrete (SLA vencido):* a solicitação da *{escola}* aguarda sua aprovação de *{p['short_label']}* e o prazo já venceu."
 
-            try:
-                client.chat_postMessage(
-                    channel=approver_id,
-                    text=msg
-                )
-                total_cobrados += 1
-            except Exception as e:
-                logger.error(f"Erro ao enviar cobrança por DM para {approver_name}: {e}")
+            if has_real_id:
+                try:
+                    client.chat_postMessage(
+                        channel=approver_id,
+                        text=msg
+                    )
+                    total_cobrados += 1
+                except Exception as e:
+                    logger.error(f"Erro ao enviar cobrança por DM para {approver_name}: {e}")
+            else:
+                # Sem ID real de Slack pra mandar DM: ao menos avisa na thread pública,
+                # mencionando por nome, pra não desaparecer sem rastro.
+                logger.warning(f"Cobrança de SLA para {approver_name}: sem ID de Slack válido para DM, caindo para a thread.")
+                try:
+                    client.chat_postMessage(
+                        channel=t["channel_id"],
+                        thread_ts=t["thread_ts"],
+                        text=f"@{approver_name} {msg}"
+                    )
+                    total_cobrados += 1
+                except Exception as e:
+                    logger.error(f"Erro ao enviar cobrança na thread para {approver_name}: {e}")
 
-    logger.info(f"Cobrança inteligente concluída: {total_cobrados} lembrete(s) enviado(s) por DM.")
+    logger.info(f"Cobrança inteligente concluída: {total_cobrados} lembrete(s) enviado(s).")
     return total_cobrados
 
 
@@ -713,3 +727,135 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
         "total_pendentes": len(pendentes),
         "message": f"✅ Cobrança disparada com sucesso na thread e via DM para {len(pendentes)} alçada(s) pendente(s)!"
     }
+
+
+# =========================================================================
+# EXPORTAÇÃO TABULAR (preparo para banco/planilha - ex.: BigQuery, Sheets)
+# =========================================================================
+# As funções abaixo só achatam o JSON já persistido em linhas de tabela;
+# não escrevem em nenhum destino externo. Servem para ter os dados prontos
+# no formato tabular antes de decidir onde eles vão ser carregados.
+
+TICKET_ROW_FIELDS = [
+    "ticket_key", "channel_id", "thread_ts", "escola", "cnpj", "inep",
+    "consultor_id", "consultor_name", "frente", "marcas", "alunado", "acv",
+    "rede_grupo", "nome_rede", "cnpjs_rede", "tem_divida_alta", "valor_divida",
+    "marcas_com_inviab", "nomes_marcas_inviab", "link_sf", "simulador_link",
+    "status", "created_at", "completed_at",
+    "rejected_by_id", "rejected_by_name", "rejection_reason_label", "rejection_details",
+]
+
+APPROVAL_ROW_FIELDS = [
+    "ticket_key", "approval_key", "role_title", "short_label", "approver_id",
+    "approver_name", "status", "sla_due_at",
+    "approved_by_id", "approved_by_name", "approved_at",
+    "rejected_by_id", "rejected_by_name", "rejected_at", "reason_key", "reason_label", "details",
+    "is_substituted", "original_approver_id", "original_approver_name",
+    "substitute_until", "substitution_reason", "substituted_by", "substituted_at",
+]
+
+
+def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Achata um ticket (1 linha) para um schema tabular estável, do jeito que
+    qualquer banco relacional ou data warehouse (ex.: BigQuery) espera.
+    Não grava em nenhum lugar - só formata o que já está em tickets_state.json.
+    """
+    extra = ticket.get("extra_data", {}) or {}
+    return {
+        "ticket_key": ticket.get("key"),
+        "channel_id": ticket.get("channel_id"),
+        "thread_ts": ticket.get("thread_ts"),
+        "escola": ticket.get("escola"),
+        "cnpj": extra.get("cnpj") or ticket.get("cnpj"),
+        "inep": extra.get("inep") or ticket.get("inep"),
+        "consultor_id": ticket.get("consultor_id"),
+        "consultor_name": ticket.get("consultor_name"),
+        "frente": extra.get("frente"),
+        "marcas": extra.get("marcas") or ticket.get("marcas"),
+        "alunado": extra.get("alunado"),
+        "acv": extra.get("acv") or ticket.get("acv"),
+        "rede_grupo": extra.get("rede_grupo"),
+        "nome_rede": extra.get("nome_rede"),
+        "cnpjs_rede": extra.get("cnpjs_rede"),
+        "tem_divida_alta": extra.get("tem_divida_alta", ticket.get("tem_divida_alta", False)),
+        "valor_divida": extra.get("valor_divida") or ticket.get("valor_divida"),
+        "marcas_com_inviab": extra.get("marcas_com_inviab", ticket.get("marcas_com_inviab", False)),
+        "nomes_marcas_inviab": extra.get("nomes_marcas_inviab"),
+        "link_sf": extra.get("link_sf"),
+        "simulador_link": extra.get("simulador_link"),
+        "status": ticket.get("status"),
+        "created_at": ticket.get("created_at"),
+        "completed_at": ticket.get("completed_at"),
+        "rejected_by_id": ticket.get("rejected_by_id"),
+        "rejected_by_name": ticket.get("rejected_by_name"),
+        "rejection_reason_label": ticket.get("rejection_reason_label"),
+        "rejection_details": ticket.get("rejection_details"),
+    }
+
+
+def to_tabular_approval_records(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Achata as alçadas de um ticket em linhas de uma tabela filha (1 linha por
+    alçada), pronta para um join por (ticket_key, approval_key). Inclui o
+    percentual de inviabilidade de cada marca (são valores livres do simulador,
+    não entram como colunas próprias, ficam no dict inviabilidades_pct do ticket).
+    """
+    rows = []
+    for key, a in ticket.get("approvals", {}).items():
+        rows.append({
+            "ticket_key": ticket.get("key"),
+            "approval_key": key,
+            "role_title": a.get("role_title"),
+            "short_label": a.get("short_label"),
+            "approver_id": a.get("approver_id"),
+            "approver_name": a.get("approver_name"),
+            "status": a.get("status"),
+            "sla_due_at": a.get("sla_due_at"),
+            "approved_by_id": a.get("approved_by_id"),
+            "approved_by_name": a.get("approved_by_name"),
+            "approved_at": a.get("approved_at"),
+            "rejected_by_id": a.get("rejected_by_id"),
+            "rejected_by_name": a.get("rejected_by_name"),
+            "rejected_at": a.get("rejected_at"),
+            "reason_key": a.get("reason_key"),
+            "reason_label": a.get("reason_label"),
+            "details": a.get("details"),
+            "is_substituted": a.get("is_substituted", False),
+            "original_approver_id": a.get("original_approver_id"),
+            "original_approver_name": a.get("original_approver_name"),
+            "substitute_until": a.get("substitute_until"),
+            "substitution_reason": a.get("substitution_reason"),
+            "substituted_by": a.get("substituted_by"),
+            "substituted_at": a.get("substituted_at"),
+        })
+    return rows
+
+
+def export_to_csv(out_dir: str) -> Dict[str, str]:
+    """
+    Exporta todos os tickets persistidos para 2 CSVs (tickets.csv e
+    approvals.csv), prontos para carregar em qualquer tabela (BigQuery,
+    Sheets, Postgres, etc.) no dia em que houver um destino definido.
+    Retorna os caminhos dos arquivos gerados.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    tickets = load_tickets()
+
+    tickets_path = os.path.join(out_dir, "tickets.csv")
+    approvals_path = os.path.join(out_dir, "approvals.csv")
+
+    with open(tickets_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=TICKET_ROW_FIELDS)
+        writer.writeheader()
+        for ticket in tickets.values():
+            writer.writerow(to_tabular_record(ticket))
+
+    with open(approvals_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=APPROVAL_ROW_FIELDS)
+        writer.writeheader()
+        for ticket in tickets.values():
+            for row in to_tabular_approval_records(ticket):
+                writer.writerow(row)
+
+    return {"tickets_csv": tickets_path, "approvals_csv": approvals_path}
