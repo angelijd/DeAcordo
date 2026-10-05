@@ -26,6 +26,7 @@ const GERAL = {
   // M LINK DO PIC, N VERSÃO DO PIC.  (layout antigo: ABERTURA 1, FRENTE 2, MARCA 3, CONSULTOR 4, CNPJ 8, LINK 32)
   COL_ABERTURA: 6,                 // FECHAMENTO: define o pedido "mais recente"
   COL_FRENTE: 1, COL_MARCA: 2, COL_CONSULTOR: 3, COL_CNPJ: 5, COL_LINK: 7,
+  COL_LINK_PIC: 13, COL_VERSAO_PIC: 14,
   LIMITE_MS: 4.5 * 60 * 1000,      // tempo de cada rodada
   SALVAR_A_CADA: 20,               // registros
   PROGRESSO_A_CADA: 50,            // linhas percorridas
@@ -40,6 +41,7 @@ const MAT = {
   REN: { col: 20, ini: 19, fim: 87, cabLinha: 18 },   // coluna T
   AMP: { col: 15, ini: 94, fim: 112, cabLinha: 93 },  // coluna O
   CAB_ESPERADO: 'input final',
+  COL_ID_MATERIAL: 0,      // coluna do ID do material em "Material opcional" (0 = não existe: sai vazio)
 };
 const B2C = {
   ABA: 'Simulador', COL: 23, INI: 23, FIM: 37,          // coluna W
@@ -49,21 +51,22 @@ const JOBS = {
   cresc: {
     id: 'cresc', titulo: 'Crescimento (preço família)', handler: 'processar', propProx: 'proxima',
     abaResult: 'Resultado_Crescimento', abaLog: 'Log_Crescimento',
-    cabResult: ['Link do simulador', 'Consultor', 'Frente', 'Séries', 'Preço de tabela', 'Desconto',
-      'Preço negociado', 'Preço família', 'Marca'],
+    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor', 'Série', 'Preço de tabela', 'Desconto',
+      'Preço negociado', 'Preço família'],
     csvPrefixo: 'preco_familia_simuladores_', ler: lerCrescimento_,
   },
   mat: {
     id: 'mat', titulo: 'Renovação e ampliação (material opcional)', handler: 'processarMat', propProx: 'proxima_mat',
     abaResult: 'Resultado_Renovação', abaLog: 'Log_Renovação',
-    cabResult: ['Link do simulador', 'Consultor', 'Frente', 'Material de renovação', 'Material de ampliação', 'Marca'],
+    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor', 'Origem', 'Série', 'ID do material', 'Material',
+      'Preço B2C'],
     csvPrefixo: 'material_opcional_', ler: lerMaterial_,
   },
   b2c: {
     id: 'b2c', titulo: 'Preço de venda B2C', handler: 'processarB2C', propProx: 'proxima_b2c',
     abaResult: 'Resultado_Renovação_SimuladorAntigo', abaLog: 'Log_Renovação_SimuladorAntigo',
-    cabResult: ['Link do simulador', 'Consultor', 'Frente', 'Marca', 'Segmentos', 'Séries',
-      'Material col. 27', 'Preço de venda B2C'],
+    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor', 'Segmento', 'Série', 'Material',
+      'Preço de venda B2C'],
     csvPrefixo: 'preco_b2c_simuladores_', ler: lerB2C_,
   },
 };
@@ -317,9 +320,11 @@ function iniciarDoZero_(job) {
   return rodar_(job);
 }
 
-// ===================== LEITORES (um por cenário) =====================
-function baseRow_(l, link) {
-  return [link, l[GERAL.COL_CONSULTOR - 1], l[GERAL.COL_FRENTE - 1]];
+// ===================== LEITORES (um por cenário; UMA LINHA POR SÉRIE/MATERIAL, sem concatenar) =====================
+/** Colunas comuns: link do simulador, CNPJ, link e versão do PIC, marca, frente, consultor. */
+function baseRow_(l, link, marca) {
+  return [link, normCnpj_(l[GERAL.COL_CNPJ - 1]), l[GERAL.COL_LINK_PIC - 1], l[GERAL.COL_VERSAO_PIC - 1],
+    marca || l[GERAL.COL_MARCA - 1], l[GERAL.COL_FRENTE - 1], l[GERAL.COL_CONSULTOR - 1]];
 }
 
 function lerCrescimento_(planilha, l, link) {
@@ -330,16 +335,9 @@ function lerCrescimento_(planilha, l, link) {
   const faixa = sim.getRange(CRESC.INI, 2, n, 6); // B..G
   const vals = faixa.getValues();
   const disp = faixa.getDisplayValues();
-  const col = [[], [], [], [], []]; // série, tabela, desconto, negociado, família
   for (let r = 0; r < n; r++) {
     if (!(numPositivo_(vals[r][5]) > 0)) continue; // só maior que zero
-    col[0].push(disp[r][0]); col[1].push(disp[r][2]); col[2].push(disp[r][3]);
-    col[3].push(disp[r][4]); col[4].push(disp[r][5]);
-  }
-  if (col[0].length) {
-    out.linhas.push(baseRow_(l, link)
-      .concat(col.map(function (c) { return c.join(' | '); }))
-      .concat([l[GERAL.COL_MARCA - 1]]));
+    out.linhas.push(baseRow_(l, link).concat([disp[r][0], disp[r][2], disp[r][3], disp[r][4], disp[r][5]]));
   }
   return out;
 }
@@ -348,15 +346,17 @@ function lerMaterial_(planilha, l, link) {
   const out = { linhas: [], logs: [] };
   const aba = achaAba_(planilha, MAT.ABA);
   if (!aba) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + MAT.ABA + '" não encontrada'); return out; }
-  const ren = lerSecaoMat_(aba, MAT.REN, 'Renovação (col. T)');
-  const amp = lerSecaoMat_(aba, MAT.AMP, 'Ampliação (col. O)');
-  ren.erros.concat(amp.erros).forEach(function (m) { out.logs.push('PLANILHA INCONSISTENTE: ' + m); });
-  if (ren.itens.length || amp.itens.length) {
-    out.linhas.push(baseRow_(l, link).concat([ren.itens.join(' | '), amp.itens.join(' | '), l[GERAL.COL_MARCA - 1]]));
-  }
+  [[MAT.REN, 'Renovação', 'Renovação (col. T)'], [MAT.AMP, 'Ampliação', 'Ampliação (col. O)']].forEach(function (s) {
+    const sec = lerSecaoMat_(aba, s[0], s[2]);
+    sec.erros.forEach(function (m) { out.logs.push('PLANILHA INCONSISTENTE: ' + m); });
+    sec.itens.forEach(function (it) {
+      out.linhas.push(baseRow_(l, link, it.marca).concat([s[1], it.serie, it.id, it.material, it.preco]));
+    });
+  });
   return out;
 }
 
+/** Itens da seção (marca, série, id, material, preço), um por linha da aba, só preço > 0. */
 function lerSecaoMat_(aba, cfg, rotulo) {
   const out = { itens: [], erros: [] };
   const cab = String(aba.getRange(cfg.cabLinha, cfg.col).getDisplayValue());
@@ -366,7 +366,7 @@ function lerSecaoMat_(aba, cfg, rotulo) {
     return out;
   }
   const n = cfg.fim - cfg.ini + 1;
-  const vals = aba.getRange(cfg.ini, 1, n, cfg.col).getDisplayValues(); // A..coluna alvo
+  const vals = aba.getRange(cfg.ini, 1, n, Math.max(cfg.col, MAT.COL_ID_MATERIAL)).getDisplayValues();
   const limpa = function (x) { x = String(x || '').trim(); return x.charAt(0) === '#' ? '' : x; };
   let comErro = 0;
   for (let r = 0; r < n; r++) {
@@ -374,10 +374,13 @@ function lerSecaoMat_(aba, cfg, rotulo) {
     if (v === '') continue;
     if (v.charAt(0) === '#') { comErro++; continue; }
     if (!(numPositivo_(v) > 0)) continue; // só maior que zero
-    const marca = limpa(vals[r][1]);                                              // B
-    const material = limpa(vals[r][4]) || limpa(vals[r][0]) || '(sem material)';  // E, senão A
-    const serie = limpa(vals[r][3]);                                              // D
-    out.itens.push((marca ? marca + ' - ' : '') + material + (serie ? ' (' + serie + ')' : '') + ': ' + v);
+    out.itens.push({
+      marca: limpa(vals[r][1]),                                                // B
+      serie: limpa(vals[r][3]),                                                // D
+      id: MAT.COL_ID_MATERIAL ? limpa(vals[r][MAT.COL_ID_MATERIAL - 1]) : '',
+      material: limpa(vals[r][4]) || limpa(vals[r][0]) || '(sem material)',    // E, senão A
+      preco: numPositivo_(v),
+    });
   }
   if (comErro) out.erros.push(rotulo + ': ' + comErro + ' célula(s) com erro (#REF! etc.)');
   return out;
@@ -397,20 +400,16 @@ function lerB2C_(planilha, l, link) {
   const faixa = sim.getRange(B2C.INI, 1, n, B2C.COL); // A..W
   const vals = faixa.getValues();
   const disp = faixa.getDisplayValues();
-  const col = [[], [], [], []]; // segmento (B), série (C), material col. 27 (L), preço (W)
   let comErro = 0;
   for (let r = 0; r < n; r++) {
     const bruto = vals[r][B2C.COL - 1];
     if (bruto === '' || bruto === null) continue;
     if (String(bruto).charAt(0) === '#') { comErro++; continue; }
     if (!(numPositivo_(bruto) > 0)) continue; // só maior que zero
-    col[0].push(disp[r][1]); col[1].push(disp[r][2]); col[2].push(disp[r][11]); col[3].push(disp[r][B2C.COL - 1]);
+    // segmento (B), série (C), material col. 27 (L), preço (W)
+    out.linhas.push(baseRow_(l, link).concat([disp[r][1], disp[r][2], disp[r][11], numPositivo_(bruto)]));
   }
   if (comErro) out.logs.push('PLANILHA INCONSISTENTE: ' + comErro + ' célula(s) com erro (#REF! etc.) na coluna W');
-  if (col[3].length) {
-    out.linhas.push(baseRow_(l, link).concat([l[GERAL.COL_MARCA - 1]])
-      .concat(col.map(function (c) { return c.join(' | '); })));
-  }
   return out;
 }
 
