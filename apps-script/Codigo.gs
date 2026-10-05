@@ -2,8 +2,14 @@
  * EXTRAÇÕES DE SIMULADORES (3 cenários) + PAINEL DE PROGRESSO
  *
  *  1) Crescimento  : aba Simulador, col. G, linhas 38-57, valor > 0
- *  2) Renovação/ampliação: aba "Material opcional", col. T (19-87) e col. O (94-112), valor > 0
- *  3) Preço B2C    : aba Simulador, col. W, linhas 23-37, valor > 0
+ *  2) Renovação     : aba "Resumo da negociação" (regra de potencializador, abaixo)
+ *  3) Simulador antigo: aba "Resumo da negociação" (mesma regra da Renovação)
+ *
+ *  Regra de potencializador (2 e 3): procura na coluna B toda célula que contém
+ *  "Bonificação de material". Se na mesma linha a coluna D for > 0 => potencializador
+ *  encontrado (uma linha no resultado). Se nenhuma célula for encontrada => log.
+ *  Renovação e Simulador antigo rodam sobre grupos diferentes de linhas da planilha
+ *  base (filtre/oculte as linhas do modelo que quer analisar; só as visíveis entram).
  *
  * Regras comuns: pedidos de QUALQUER data cujo CNPJ (col. E da planilha base) esteja na aba
  * "CNPJs" (col. A, a partir da linha 2); só linhas visíveis; link na col. G (SIMULADOR);
@@ -36,17 +42,13 @@ const GERAL = {
 };
 
 const CRESC = { ABA: 'Simulador', INI: 38, FIM: 57 };
-const MAT = {
-  ABA: 'Material opcional',
-  REN: { col: 20, ini: 19, fim: 87, cabLinha: 18 },   // coluna T
-  AMP: { col: 15, ini: 94, fim: 112, cabLinha: 93 },  // coluna O
-  CAB_ESPERADO: 'input final',
-  COL_ID_MATERIAL: 0,      // coluna do ID do material em "Material opcional" (0 = não existe: sai vazio)
+const RESUMO = {
+  ABA: 'Resumo da negociação',
+  COL_ROTULO: 2,                    // coluna B: texto procurado
+  ROTULO: 'bonificacao de material', // sem acento/maiúscula; basta a célula conter o texto
+  COL_VALOR: 4,                     // coluna D: precisa ser > 0
 };
-const B2C = {
-  ABA: 'Simulador', COL: 23, INI: 23, FIM: 40,          // coluna W (17 séries + linha de controle; linhas sem preço > 0 são ignoradas)
-  CAB: { ini: 15, fim: 22, texto: 'b2c' },
-};
+const CAB_POT = ['Série', 'ID do material', 'Material', 'Preço B2C potencializador', 'Linha no simulador'];
 const JOBS = {
   cresc: {
     id: 'cresc', titulo: 'Crescimento (preço família)', handler: 'processar', propProx: 'proxima',
@@ -56,18 +58,18 @@ const JOBS = {
     csvPrefixo: 'preco_familia_simuladores_', ler: lerCrescimento_,
   },
   mat: {
-    id: 'mat', titulo: 'Renovação e ampliação (material opcional)', handler: 'processarMat', propProx: 'proxima_mat',
+    id: 'mat', titulo: 'Renovação (potencializador)', handler: 'processarMat', propProx: 'proxima_mat',
     abaResult: 'Resultado_Renovação', abaLog: 'Log_Renovação',
-    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor', 'Origem', 'Série', 'ID do material', 'Material',
-      'Preço B2C'],
-    csvPrefixo: 'material_opcional_', ler: lerMaterial_,
+    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor']
+      .concat(CAB_POT),
+    csvPrefixo: 'renovacao_potencializador_', ler: lerResumo_,
   },
   b2c: {
-    id: 'b2c', titulo: 'Preço de venda B2C', handler: 'processarB2C', propProx: 'proxima_b2c',
-    abaResult: 'Resultado_Renovação_SimuladorAntigo', abaLog: 'Log_Renovação_SimuladorAntigo',
-    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor', 'Segmento', 'Série', 'Material',
-      'Preço de venda B2C'],
-    csvPrefixo: 'preco_b2c_simuladores_', ler: lerB2C_,
+    id: 'b2c', titulo: 'Simulador antigo (potencializador)', handler: 'processarB2C', propProx: 'proxima_b2c',
+    abaResult: 'Resultado_SimuladorAntigo', abaLog: 'Log_SimuladorAntigo',
+    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor']
+      .concat(CAB_POT),
+    csvPrefixo: 'simulador_antigo_potencializador_', ler: lerResumo_,
   },
 };
 
@@ -77,8 +79,8 @@ function onOpen() {
     .addItem('Abrir painel de progresso', 'abrirPainel')
     .addSeparator()
     .addItem('Recomeçar do zero: Crescimento (preço família)', 'iniciar')
-    .addItem('Recomeçar do zero: Material opcional (renovação/ampliação)', 'iniciarMat')
-    .addItem('Recomeçar do zero: Preço B2C', 'iniciarB2C')
+    .addItem('Recomeçar do zero: Renovação', 'iniciarMat')
+    .addItem('Recomeçar do zero: Simulador antigo', 'iniciarB2C')
     .addToUi();
 }
 
@@ -342,75 +344,33 @@ function lerCrescimento_(planilha, l, link) {
   return out;
 }
 
-function lerMaterial_(planilha, l, link) {
+/**
+ * Renovação e Simulador antigo: aba "Resumo da negociação".
+ * Toda célula da coluna B que contém "Bonificação de material" com valor > 0 na coluna D
+ * é um potencializador encontrado. Nenhuma célula encontrada => log.
+ */
+function lerResumo_(planilha, l, link) {
   const out = { linhas: [], logs: [] };
-  const aba = achaAba_(planilha, MAT.ABA);
-  if (!aba) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + MAT.ABA + '" não encontrada'); return out; }
-  [[MAT.REN, 'Renovação', 'Renovação (col. T)'], [MAT.AMP, 'Ampliação', 'Ampliação (col. O)']].forEach(function (s) {
-    const sec = lerSecaoMat_(aba, s[0], s[2]);
-    sec.erros.forEach(function (m) { out.logs.push('PLANILHA INCONSISTENTE: ' + m); });
-    sec.itens.forEach(function (it) {
-      out.linhas.push(baseRow_(l, link, it.marca).concat([s[1], it.serie, it.id, it.material, it.preco]));
-    });
-  });
-  return out;
-}
-
-/** Itens da seção (marca, série, id, material, preço), um por linha da aba, só preço > 0. */
-function lerSecaoMat_(aba, cfg, rotulo) {
-  const out = { itens: [], erros: [] };
-  const cab = String(aba.getRange(cfg.cabLinha, cfg.col).getDisplayValue());
-  if (norm_(cab).indexOf(MAT.CAB_ESPERADO) < 0) {
-    out.erros.push(rotulo + ': cabeçalho esperado "Input final do contrato" não encontrado na linha ' +
-      cfg.cabLinha + ' (encontrado: "' + cab.slice(0, 60) + '")');
-    return out;
-  }
-  const n = cfg.fim - cfg.ini + 1;
-  const vals = aba.getRange(cfg.ini, 1, n, Math.max(cfg.col, MAT.COL_ID_MATERIAL)).getDisplayValues();
-  const limpa = function (x) { x = String(x || '').trim(); return x.charAt(0) === '#' ? '' : x; };
-  let comErro = 0;
-  for (let r = 0; r < n; r++) {
-    const v = String(vals[r][cfg.col - 1]).trim();
-    if (v === '') continue;
-    if (v.charAt(0) === '#') { comErro++; continue; }
-    if (!(numPositivo_(v) > 0)) continue; // só maior que zero
-    out.itens.push({
-      marca: limpa(vals[r][1]),                                                // B
-      serie: limpa(vals[r][3]),                                                // D
-      id: MAT.COL_ID_MATERIAL ? limpa(vals[r][MAT.COL_ID_MATERIAL - 1]) : '',
-      material: limpa(vals[r][4]) || limpa(vals[r][0]) || '(sem material)',    // E, senão A
-      preco: numPositivo_(v),
-    });
-  }
-  if (comErro) out.erros.push(rotulo + ': ' + comErro + ' célula(s) com erro (#REF! etc.)');
-  return out;
-}
-
-function lerB2C_(planilha, l, link) {
-  const out = { linhas: [], logs: [] };
-  const sim = planilha.getSheetByName(B2C.ABA);
-  if (!sim) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + B2C.ABA + '" não encontrada'); return out; }
-  const b = B2C.CAB;
-  const cabs = sim.getRange(b.ini, B2C.COL, b.fim - b.ini + 1, 1).getDisplayValues();
-  if (!cabs.some(function (r) { return norm_(r[0]).indexOf(b.texto) >= 0; })) {
-    out.logs.push('PLANILHA INCONSISTENTE: cabeçalho "Preço de venda B2C" não encontrado na coluna W (linhas ' + b.ini + '-' + b.fim + ')');
-    return out;
-  }
-  const n = B2C.FIM - B2C.INI + 1;
-  const faixa = sim.getRange(B2C.INI, 1, n, B2C.COL); // A..W
-  const vals = faixa.getValues();
-  const disp = faixa.getDisplayValues();
-  let comErro = 0;
-  for (let r = 0; r < n; r++) {
-    const bruto = vals[r][B2C.COL - 1];
-    if (bruto === '' || bruto === null) continue;
+  const aba = achaAba_(planilha, RESUMO.ABA);
+  if (!aba) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + RESUMO.ABA + '" não encontrada'); return out; }
+  const ultima = aba.getLastRow();
+  const colMax = Math.max(RESUMO.COL_ROTULO, RESUMO.COL_VALOR);
+  const faixa = ultima > 0 ? aba.getRange(1, 1, ultima, colMax) : null;
+  const vals = faixa ? faixa.getValues() : [];
+  const disp = faixa ? faixa.getDisplayValues() : [];
+  let achou = false, comErro = 0;
+  for (let r = 0; r < vals.length; r++) {
+    const rotulo = String(disp[r][RESUMO.COL_ROTULO - 1]).trim();
+    if (norm_(rotulo).indexOf(RESUMO.ROTULO) < 0) continue;
+    achou = true;
+    const bruto = vals[r][RESUMO.COL_VALOR - 1];
     if (String(bruto).charAt(0) === '#') { comErro++; continue; }
-    if (!(numPositivo_(bruto) > 0)) continue; // só maior que zero
-    // segmento (B), série (C), material col. 27 (L) ou, se vazio, material 26 (D), preço (W)
-    const material = String(disp[r][11]).trim() || String(disp[r][3]).trim();
-    out.linhas.push(baseRow_(l, link).concat([disp[r][1], disp[r][2], material, numPositivo_(bruto)]));
+    const preco = numPositivo_(bruto);
+    if (!(preco > 0)) continue; // bonificação sem valor: não é potencializador
+    out.linhas.push(baseRow_(l, link).concat(['', '', rotulo, preco, r + 1])); // série e ID em branco
   }
-  if (comErro) out.logs.push('PLANILHA INCONSISTENTE: ' + comErro + ' célula(s) com erro (#REF! etc.) na coluna W');
+  if (!achou) out.logs.push('PLANILHA INCONSISTENTE: célula "Bonificação de material" não encontrada na coluna B da aba "' + RESUMO.ABA + '"');
+  if (comErro) out.logs.push('PLANILHA INCONSISTENTE: ' + comErro + ' célula(s) com erro (#REF! etc.) na coluna D de "Bonificação de material"');
   return out;
 }
 
