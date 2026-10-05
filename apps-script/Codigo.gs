@@ -44,7 +44,7 @@ const MAT = {
   COL_ID_MATERIAL: 0,      // coluna do ID do material em "Material opcional" (0 = não existe: sai vazio)
 };
 const B2C = {
-  ABA: 'Simulador', COL: 23, INI: 23, FIM: 37,          // coluna W
+  ABA: 'Simulador', COL: 23, INI: 23, FIM: 40,          // coluna W (17 séries + linha de controle; linhas sem preço > 0 são ignoradas)
   CAB: { ini: 15, fim: 22, texto: 'b2c' },
 };
 const JOBS = {
@@ -406,8 +406,9 @@ function lerB2C_(planilha, l, link) {
     if (bruto === '' || bruto === null) continue;
     if (String(bruto).charAt(0) === '#') { comErro++; continue; }
     if (!(numPositivo_(bruto) > 0)) continue; // só maior que zero
-    // segmento (B), série (C), material col. 27 (L), preço (W)
-    out.linhas.push(baseRow_(l, link).concat([disp[r][1], disp[r][2], disp[r][11], numPositivo_(bruto)]));
+    // segmento (B), série (C), material col. 27 (L) ou, se vazio, material 26 (D), preço (W)
+    const material = String(disp[r][11]).trim() || String(disp[r][3]).trim();
+    out.linhas.push(baseRow_(l, link).concat([disp[r][1], disp[r][2], material, numPositivo_(bruto)]));
   }
   if (comErro) out.logs.push('PLANILHA INCONSISTENTE: ' + comErro + ' célula(s) com erro (#REF! etc.) na coluna W');
   return out;
