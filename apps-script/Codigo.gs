@@ -1,17 +1,14 @@
 /**
- * EXTRAÇÕES DE SIMULADORES (4 cenários) + PAINEL DE PROGRESSO
+ * EXTRAÇÕES DE SIMULADORES (3 cenários) + PAINEL DE PROGRESSO
  *
  *  1) Crescimento  : aba Simulador, col. G, linhas 38-57, valor > 0
  *  2) Renovação/ampliação: aba "Material opcional", col. T (19-87) e col. O (94-112), valor > 0
  *  3) Preço B2C    : aba Simulador, col. W, linhas 23-37, valor > 0
- *  4) Potencializadores (B2C): mesma leitura do cenário 2, mas UMA LINHA POR MATERIAL,
- *     com CNPJ, link/versão do PIC, marca, série, material e preço; só o simulador mais
- *     recente por CNPJ + marca.
  *
- * Regras comuns: pedidos de QUALQUER data cujo CNPJ (col. H da Aprovacoes) esteja na aba
- * "CNPJs" (col. A, a partir da linha 2); só linhas visíveis; link na col. AF;
- * sem acesso => pula e registra no log (com o consultor); uma linha por simulador.
- * Link repetido: vale o pedido mais recente (data/hora da col. A).
+ * Regras comuns: pedidos de QUALQUER data cujo CNPJ (col. E da planilha base) esteja na aba
+ * "CNPJs" (col. A, a partir da linha 2); só linhas visíveis; link na col. G (SIMULADOR);
+ * sem acesso => pula e registra no log; uma linha por simulador.
+ * Link repetido: vale o pedido mais recente (col. F, FECHAMENTO).
  *
  * Tudo que é coletado é gravado nas abas de resultado a cada poucos registros e o
  * ponto onde parou é salvo junto: se algo falhar, a próxima rodada continua dali.
@@ -24,12 +21,11 @@ const GERAL = {
   DATA_INICIO: null,               // null = qualquer data (ou new Date(2026, 8, 1) para filtrar)
   FILTRAR_CNPJ: true,              // só pedidos cujo CNPJ está na aba abaixo
   ABA_CNPJS: 'CNPJs',              // lista de CNPJs: coluna A, a partir da linha 2
-  // Colunas da aba Aprovacoes: A FRENTE, B MARCA(S), C SOLICITANTE, D REDE, E CNPJ, F FECHAMENTO,
+  // Colunas da planilha base (aba Aprovacoes): A FRENTE, B MARCA(S), C SOLICITANTE, D REDE, E CNPJ, F FECHAMENTO,
   // G SIMULADOR (link), H LINK THREAD, I OPORTUNIDADE, J ALUNADO, K ACV, L MARCAS INVIABILIDADE,
-  // M LINK DO PIC, N VERSÃO DO PIC.   (layout antigo: ABERTURA 1, FRENTE 2, MARCA 3, CONSULTOR 4, CNPJ 8, LINK 32)
+  // M LINK DO PIC, N VERSÃO DO PIC.  (layout antigo: ABERTURA 1, FRENTE 2, MARCA 3, CONSULTOR 4, CNPJ 8, LINK 32)
   COL_ABERTURA: 6,                 // FECHAMENTO: define o pedido "mais recente"
   COL_FRENTE: 1, COL_MARCA: 2, COL_CONSULTOR: 3, COL_CNPJ: 5, COL_LINK: 7,
-  COL_LINK_PIC: 13, COL_VERSAO_PIC: 14,
   LIMITE_MS: 4.5 * 60 * 1000,      // tempo de cada rodada
   SALVAR_A_CADA: 20,               // registros
   PROGRESSO_A_CADA: 50,            // linhas percorridas
@@ -49,13 +45,6 @@ const B2C = {
   ABA: 'Simulador', COL: 23, INI: 23, FIM: 37,          // coluna W
   CAB: { ini: 15, fim: 22, texto: 'b2c' },
 };
-// Potencializadores: usa as mesmas faixas de MAT, uma linha por material.
-const POT = {
-  INCLUIR_AMPLIACAO: true,        // false = só renovação (col. T)
-  COL_ID_MATERIAL: 0,             // coluna do ID do material em "Material opcional" (0 = não existe)
-  CABS_ACEITOS: ['input final', 'b2c', 'revenda'],  // texto esperado no cabeçalho da coluna de preço
-};
-
 const JOBS = {
   cresc: {
     id: 'cresc', titulo: 'Crescimento (preço família)', handler: 'processar', propProx: 'proxima',
@@ -77,14 +66,6 @@ const JOBS = {
       'Material col. 27', 'Preço de venda B2C'],
     csvPrefixo: 'preco_b2c_simuladores_', ler: lerB2C_,
   },
-  pot: {
-    id: 'pot', titulo: 'Potencializadores (preço B2C por material)', handler: 'processarPot', propProx: 'proxima_pot',
-    abaResult: 'Resultado_Potencializadores', abaLog: 'Log_Potencializadores',
-    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente',
-      'Origem', 'Série', 'ID do material', 'Material', 'Preço B2C potencializador', 'Consultor'],
-    csvPrefixo: 'potencializadores_b2c_', ler: lerPot_,
-    chaveDedupe: function (l) { return normCnpj_(l[GERAL.COL_CNPJ - 1]) + '|' + norm_(l[GERAL.COL_MARCA - 1]); },
-  },
 };
 
 // ===================== MENU E PAINEL =====================
@@ -95,7 +76,6 @@ function onOpen() {
     .addItem('Recomeçar do zero: Crescimento (preço família)', 'iniciar')
     .addItem('Recomeçar do zero: Material opcional (renovação/ampliação)', 'iniciarMat')
     .addItem('Recomeçar do zero: Preço B2C', 'iniciarB2C')
-    .addItem('Recomeçar do zero: Potencializadores (B2C por material)', 'iniciarPot')
     .addToUi();
 }
 
@@ -108,12 +88,10 @@ function abrirPainel() {
 function processar() { return rodar_(JOBS.cresc); }
 function processarMat() { return rodar_(JOBS.mat); }
 function processarB2C() { return rodar_(JOBS.b2c); }
-function processarPot() { return rodar_(JOBS.pot); }
 
 function iniciar() { confirmarEIniciar_(JOBS.cresc); }
 function iniciarMat() { confirmarEIniciar_(JOBS.mat); }
 function iniciarB2C() { confirmarEIniciar_(JOBS.b2c); }
-function iniciarPot() { confirmarEIniciar_(JOBS.pot); }
 
 function confirmarEIniciar_(job) {
   const ui = SpreadsheetApp.getUi();
@@ -253,8 +231,8 @@ function rodar_(job) {
       if (n > 0) p[0].getRange(2, p[1], n, 1).getValues().forEach(function (r) { vistos.add(String(r[0])); });
     });
 
-    // repetido (mesmo link, ou mesma chave do job, ex.: CNPJ + marca): vale só o pedido MAIS RECENTE
-    const vencedor = escolherVencedores_(aba, dados, rich, cnpjs, job);
+    // link repetido: vale só o pedido MAIS RECENTE
+    const vencedor = escolherVencedores_(aba, dados, rich, cnpjs);
 
     for (; i < dados.length; i++) {
       if (parado || Date.now() - t0 > GERAL.LIMITE_MS) break;
@@ -271,7 +249,7 @@ function rodar_(job) {
         link = extrairLink_(l[GERAL.COL_LINK - 1], rich[i][0]);
         if (!link) continue;
         if (aba.isRowHiddenByFilter(linhaPlan) || aba.isRowHiddenByUser(linhaPlan)) continue; // só linhas visíveis
-        if (vencedor.get(chaveDe_(job, l, link)) !== i) continue; // há um pedido mais recente com a mesma chave
+        if (vencedor.get(link) !== i) continue; // há um pedido mais recente com o mesmo link
         if (vistos.has(link)) continue;
         vistos.add(link);
         const id = idDoLink_(link);
@@ -280,8 +258,7 @@ function rodar_(job) {
         try {
           planilha = SpreadsheetApp.openById(id);
         } catch (e) {
-          bufLog.push([linhaPlan, link, 'SEM ACESSO (' + String(e.message).slice(0, 120) + ') | Consultor: ' +
-            l[GERAL.COL_CONSULTOR - 1] + ' | CNPJ: ' + normCnpj_(l[GERAL.COL_CNPJ - 1])]);
+          bufLog.push([linhaPlan, link, 'SEM ACESSO (' + String(e.message).slice(0, 120) + ')']);
           continue;
         }
         const out = job.ler(planilha, l, link);
@@ -406,47 +383,6 @@ function lerSecaoMat_(aba, cfg, rotulo) {
   return out;
 }
 
-/**
- * Potencializadores: uma linha por material com preço B2C > 0.
- * Colunas lidas em "Material opcional": B marca, D série, E material (senão A), preço na col. T/O.
- */
-function lerPot_(planilha, l, link) {
-  const out = { linhas: [], logs: [] };
-  const aba = achaAba_(planilha, MAT.ABA);
-  if (!aba) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + MAT.ABA + '" não encontrada'); return out; }
-  const cnpj = normCnpj_(l[GERAL.COL_CNPJ - 1]);
-  const secoes = [[MAT.REN, 'Renovação']];
-  if (POT.INCLUIR_AMPLIACAO) secoes.push([MAT.AMP, 'Ampliação']);
-  secoes.forEach(function (s) {
-    const cfg = s[0], origem = s[1];
-    const cab = String(aba.getRange(cfg.cabLinha, cfg.col).getDisplayValue());
-    const ok = POT.CABS_ACEITOS.some(function (t) { return norm_(cab).indexOf(t) >= 0; });
-    if (!ok) {
-      out.logs.push('PLANILHA INCONSISTENTE: ' + origem + ': cabeçalho de preço não encontrado na linha ' +
-        cfg.cabLinha + ' (encontrado: "' + cab.slice(0, 60) + '")');
-      return;
-    }
-    const n = cfg.fim - cfg.ini + 1;
-    const colMax = Math.max(cfg.col, POT.COL_ID_MATERIAL);
-    const vals = aba.getRange(cfg.ini, 1, n, colMax).getDisplayValues();
-    const limpa = function (x) { x = String(x || '').trim(); return x.charAt(0) === '#' ? '' : x; };
-    let comErro = 0;
-    for (let r = 0; r < n; r++) {
-      const v = String(vals[r][cfg.col - 1]).trim();
-      if (v === '') continue;
-      if (v.charAt(0) === '#') { comErro++; continue; }
-      const preco = numPositivo_(v);
-      if (!(preco > 0)) continue;
-      const material = limpa(vals[r][4]) || limpa(vals[r][0]) || '(sem material)';
-      const idMat = POT.COL_ID_MATERIAL ? limpa(vals[r][POT.COL_ID_MATERIAL - 1]) : '';
-      out.linhas.push([link, cnpj, l[GERAL.COL_LINK_PIC - 1], l[GERAL.COL_VERSAO_PIC - 1], l[GERAL.COL_MARCA - 1], l[GERAL.COL_FRENTE - 1], origem,
-        limpa(vals[r][3]), idMat, material, preco, l[GERAL.COL_CONSULTOR - 1]]);
-    }
-    if (comErro) out.logs.push('PLANILHA INCONSISTENTE: ' + origem + ': ' + comErro + ' célula(s) com erro (#REF! etc.)');
-  });
-  return out;
-}
-
 function lerB2C_(planilha, l, link) {
   const out = { linhas: [], logs: [] };
   const sim = planilha.getSheetByName(B2C.ABA);
@@ -551,26 +487,21 @@ function tempoPedido_(v) {
   if (!m) return -Infinity;
   return new Date(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)).getTime();
 }
-/** Chave de "repetido": a do job (ex.: CNPJ + marca) ou, por padrão, o próprio link. */
-function chaveDe_(job, l, link) {
-  return job.chaveDedupe ? job.chaveDedupe(l) : link;
-}
-/** Para cada chave, o índice do pedido mais recente (empate: o que está mais abaixo na aba). */
-function escolherVencedores_(aba, dados, rich, cnpjs, job) {
+/** Para cada link, o índice do pedido mais recente (empate: o que está mais abaixo na aba). */
+function escolherVencedores_(aba, dados, rich, cnpjs) {
   const grupos = new Map();
   dados.forEach(function (l, i) {
     if (!dentroDoPeriodo_(l[GERAL.COL_ABERTURA - 1])) return;
     if (GERAL.FILTRAR_CNPJ && !cnpjs.has(normCnpj_(l[GERAL.COL_CNPJ - 1]))) return;
     const link = extrairLink_(l[GERAL.COL_LINK - 1], rich[i][0]);
     if (!link) return;
-    const chave = chaveDe_(job, l, link);
-    if (!grupos.has(chave)) grupos.set(chave, []);
-    grupos.get(chave).push(i);
+    if (!grupos.has(link)) grupos.set(link, []);
+    grupos.get(link).push(i);
   });
   const vencedor = new Map();
-  grupos.forEach(function (idx, chave) {
+  grupos.forEach(function (idx, link) {
     let cand = idx;
-    if (idx.length > 1) { // só confere filtro nos repetidos
+    if (idx.length > 1) { // só confere filtro nos links repetidos
       cand = idx.filter(function (i) { return !(aba.isRowHiddenByFilter(i + 2) || aba.isRowHiddenByUser(i + 2)); });
     }
     if (!cand.length) return;
@@ -579,7 +510,7 @@ function escolherVencedores_(aba, dados, rich, cnpjs, job) {
       const t = tempoPedido_(dados[i][GERAL.COL_ABERTURA - 1]);
       if (t >= tm) { melhor = i; tm = t; }
     });
-    vencedor.set(chave, melhor);
+    vencedor.set(link, melhor);
   });
   return vencedor;
 }
