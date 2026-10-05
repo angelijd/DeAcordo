@@ -2,14 +2,19 @@
  * EXTRAÇÕES DE SIMULADORES (3 cenários) + PAINEL DE PROGRESSO
  *
  *  1) Crescimento  : aba Simulador, col. G, linhas 38-57, valor > 0
- *  2) Renovação     : aba "Resumo da negociação" (regra de potencializador, abaixo)
- *  3) Simulador antigo: aba "Resumo da negociação" (mesma regra da Renovação)
+ *  2) Renovação        : pré-filtro + preço na aba "Material opcional" (col. T renovação, col. O ampliação)
+ *  3) Simulador antigo : pré-filtro + preço na aba Simulador, col. W (linhas 23-40)
  *
- *  Regra de potencializador (2 e 3): procura na coluna B toda célula que contém
- *  "Bonificação de material". Se na mesma linha a coluna D for > 0 => potencializador
- *  encontrado (uma linha no resultado). Se nenhuma célula for encontrada => log.
- *  Renovação e Simulador antigo rodam sobre grupos diferentes de linhas da planilha
- *  base (filtre/oculte as linhas do modelo que quer analisar; só as visíveis entram).
+ *  Em 2 e 3, cada simulador passa por duas etapas na mesma leitura:
+ *   a) PRÉ-FILTRO, aba "Resumo da negociação": toda célula da coluna B que contém
+ *      "Bonificação de material" com valor > 0 na coluna D => tem material bonificado
+ *      (uma linha na aba "Bonificados_..."). Nenhuma célula encontrada => log.
+ *   b) PREÇO: só nos simuladores aprovados no pré-filtro, lê a aba de preços e grava uma
+ *      linha por material (formato da Beatriz) na aba "Resultado_...".
+ *      Pré-filtro positivo e nenhum preço encontrado => log "DIVERGÊNCIA".
+ *  GERAL.SO_PREFILTRO = true roda só a etapa a (para medir volume).
+ *  Renovação e Simulador antigo rodam sobre grupos diferentes de linhas da planilha base
+ *  (filtre/oculte as linhas do modelo que quer analisar; só as visíveis entram).
  *
  * Regras comuns: pedidos de QUALQUER data cujo CNPJ (col. E da planilha base) esteja na aba
  * "CNPJs" (col. A, a partir da linha 2); só linhas visíveis; link na col. G (SIMULADOR);
@@ -24,6 +29,7 @@
 // ===================== CONFIGURAÇÃO (mude os nomes das abas aqui) =====================
 const GERAL = {
   ABA_APROVACOES: 'Aprovacoes',
+  SO_PREFILTRO: false,             // true = só a etapa "Bonificação de material" (não lê preços)
   DATA_INICIO: null,               // null = qualquer data (ou new Date(2026, 8, 1) para filtrar)
   FILTRAR_CNPJ: true,              // só pedidos cujo CNPJ está na aba abaixo
   ABA_CNPJS: 'CNPJs',              // lista de CNPJs: coluna A, a partir da linha 2
@@ -48,7 +54,21 @@ const RESUMO = {
   ROTULO: 'bonificacao de material', // sem acento/maiúscula; basta a célula conter o texto
   COL_VALOR: 4,                     // coluna D: precisa ser > 0
 };
-const CAB_POT = ['Série', 'ID do material', 'Material', 'Preço B2C potencializador', 'Linha no simulador'];
+const MAT = {                       // Renovação: aba "Material opcional"
+  ABA: 'Material opcional',
+  REN: { col: 20, ini: 19, fim: 87, cabLinha: 18 },   // coluna T
+  AMP: { col: 15, ini: 94, fim: 112, cabLinha: 93 },  // coluna O
+  CAB_ESPERADO: 'input final',
+  COL_ID_MATERIAL: 0,               // coluna do ID do material (0 = não existe: sai vazio)
+};
+const B2C = {                       // Simulador antigo: aba Simulador, coluna W
+  ABA: 'Simulador', COL: 23, INI: 23, FIM: 40,          // 17 séries + linha de controle; linhas sem preço > 0 são ignoradas
+  CAB: { ini: 15, fim: 22, texto: 'b2c' },
+};
+const CAB_POT = ['Origem / segmento', 'Série', 'ID do material', 'Material', 'Preço B2C potencializador', 'Linha no simulador'];
+const CAB_PRE = ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor',
+  'Texto encontrado (col. B)', 'Valor (col. D)', 'Linha no Resumo', 'Preços encontrados'];
+const CAB_BASE = ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor'];
 const JOBS = {
   cresc: {
     id: 'cresc', titulo: 'Crescimento (preço família)', handler: 'processar', propProx: 'proxima',
@@ -59,17 +79,15 @@ const JOBS = {
   },
   mat: {
     id: 'mat', titulo: 'Renovação (potencializador)', handler: 'processarMat', propProx: 'proxima_mat',
-    abaResult: 'Resultado_Renovação', abaLog: 'Log_Renovação',
-    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor']
-      .concat(CAB_POT),
-    csvPrefixo: 'renovacao_potencializador_', ler: lerResumo_,
+    abaResult: 'Resultado_Renovação', abaLog: 'Log_Renovação', abaPre: 'Bonificados_Renovação',
+    cabResult: CAB_BASE.concat(CAB_POT), cabPre: CAB_PRE,
+    csvPrefixo: 'renovacao_potencializador_', ler: lerRenovacao_,
   },
   b2c: {
     id: 'b2c', titulo: 'Simulador antigo (potencializador)', handler: 'processarB2C', propProx: 'proxima_b2c',
-    abaResult: 'Resultado_SimuladorAntigo', abaLog: 'Log_SimuladorAntigo',
-    cabResult: ['Link do simulador', 'CNPJ', 'Link do PIC', 'Versão do PIC', 'Marca', 'Frente', 'Consultor']
-      .concat(CAB_POT),
-    csvPrefixo: 'simulador_antigo_potencializador_', ler: lerResumo_,
+    abaResult: 'Resultado_SimuladorAntigo', abaLog: 'Log_SimuladorAntigo', abaPre: 'Bonificados_SimuladorAntigo',
+    cabResult: CAB_BASE.concat(CAB_POT), cabPre: CAB_PRE,
+    csvPrefixo: 'simulador_antigo_potencializador_', ler: lerSimuladorAntigo_,
   },
 };
 
@@ -101,8 +119,9 @@ function iniciarB2C() { confirmarEIniciar_(JOBS.b2c); }
 function confirmarEIniciar_(job) {
   const ui = SpreadsheetApp.getUi();
   const r = ui.alert('Recomeçar do zero?',
-    'Isso apaga o que foi coletado em "' + job.abaResult + '" e "' + job.abaLog + '" e começa de novo.\n' +
-    'Uma cópia de segurança das duas abas será criada antes.\n\nContinuar?', ui.ButtonSet.YES_NO);
+    'Isso apaga o que foi coletado em ' + abasDoJob_(job).map(function (n) { return '"' + n + '"'; }).join(', ') +
+    ' e começa de novo.\n' +
+    'Uma cópia de segurança dessas abas será criada antes.\n\nContinuar?', ui.ButtonSet.YES_NO);
   if (r === ui.Button.YES) iniciarDoZero_(job);
 }
 
@@ -119,7 +138,7 @@ function statusPainel() {
     const st = lerEstado_(job);
     const prox = parseInt(props.getProperty(job.propProx) || '0', 10);
     const res = ss.getSheetByName(job.abaResult), log = ss.getSheetByName(job.abaLog);
-    const cont = { semAcesso: 0, inconsistente: 0, erro: 0, outros: 0 };
+    const cont = { semAcesso: 0, inconsistente: 0, erro: 0, divergencia: 0, outros: 0 };
     let nLog = 0;
     if (log && log.getLastRow() > 1) {
       log.getRange(2, 3, log.getLastRow() - 1, 1).getValues().forEach(function (v) {
@@ -127,6 +146,7 @@ function statusPainel() {
         if (t.indexOf('SEM ACESSO') === 0) cont.semAcesso++;
         else if (t.indexOf('PLANILHA INCONSISTENTE') === 0) cont.inconsistente++;
         else if (t.indexOf('ERRO') === 0) cont.erro++;
+        else if (t.indexOf('DIVERGÊNCIA') === 0) cont.divergencia++;
         else cont.outros++;
       });
     }
@@ -142,10 +162,11 @@ function statusPainel() {
       id: job.id, titulo: job.titulo, fase: fase, total: total, prox: Math.min(prox, total),
       pct: total > 0 ? Math.min(100, Math.round(prox / total * 100)) : 0,
       resultados: res ? Math.max(0, res.getLastRow() - 1) : 0,
+      bonificados: job.abaPre ? (function () { const p = ss.getSheetByName(job.abaPre); return p ? Math.max(0, p.getLastRow() - 1) : 0; })() : null,
       log: cont, nLog: nLog, gatilho: temGatilho,
       segDesdeAtividade: st.atualizadoEm ? Math.round((agora - st.atualizadoEm) / 1000) : null,
       etaMin: eta, csvUrl: st.csvUrl || '', erro: st.erro || '',
-      abasOk: !!res && !!log, abaResult: job.abaResult,
+      abasOk: !!res && !!log && (!job.abaPre || !!ss.getSheetByName(job.abaPre)), abaResult: job.abaResult,
     };
   });
 }
@@ -201,7 +222,8 @@ function rodar_(job) {
   const ss = SpreadsheetApp.getActive();
   const res = prepararAba_(ss, job.abaResult, job.cabResult);
   const log = prepararAba_(ss, job.abaLog, GERAL.CAB_LOG);
-  const bufRes = [], bufLog = [];
+  const pre = job.abaPre ? prepararAba_(ss, job.abaPre, job.cabPre) : null;
+  const bufRes = [], bufLog = [], bufPre = [];
   const st = lerEstado_(job);
   let i = parseInt(props.getProperty(job.propProx) || '0', 10);
   let ultimoSalvo = i;
@@ -209,6 +231,7 @@ function rodar_(job) {
 
   const salvar = function () {
     if (bufRes.length) { res.getRange(res.getLastRow() + 1, 1, bufRes.length, job.cabResult.length).setValues(bufRes); bufRes.length = 0; }
+    if (bufPre.length) { pre.getRange(pre.getLastRow() + 1, 1, bufPre.length, job.cabPre.length).setValues(bufPre); bufPre.length = 0; }
     if (bufLog.length) { log.getRange(log.getLastRow() + 1, 1, bufLog.length, 3).setValues(bufLog); bufLog.length = 0; }
     props.setProperty(job.propProx, String(i));
     ultimoSalvo = i;
@@ -231,7 +254,8 @@ function rodar_(job) {
 
     // links já processados (dedupe e retomada)
     const vistos = new Set();
-    [[res, 1], [log, 2]].forEach(function (p) {
+    [[res, 1], [log, 2], [pre, 1]].forEach(function (p) {
+      if (!p[0]) return;
       const n = p[0].getLastRow() - 1;
       if (n > 0) p[0].getRange(2, p[1], n, 1).getValues().forEach(function (r) { vistos.add(String(r[0])); });
     });
@@ -241,7 +265,7 @@ function rodar_(job) {
 
     for (; i < dados.length; i++) {
       if (parado || Date.now() - t0 > GERAL.LIMITE_MS) break;
-      if (bufRes.length + bufLog.length >= GERAL.SALVAR_A_CADA || i - ultimoSalvo >= GERAL.PROGRESSO_A_CADA) {
+      if (bufRes.length + bufLog.length + bufPre.length >= GERAL.SALVAR_A_CADA || i - ultimoSalvo >= GERAL.PROGRESSO_A_CADA) {
         salvar();
         if (parado) break;
       }
@@ -268,6 +292,7 @@ function rodar_(job) {
         }
         const out = job.ler(planilha, l, link);
         out.linhas.forEach(function (r) { bufRes.push(r); });
+        (out.pre || []).forEach(function (r) { bufPre.push(r); });
         out.logs.forEach(function (m) { bufLog.push([linhaPlan, link, m]); });
       } catch (e) {
         bufLog.push([linhaPlan, link, 'ERRO: ' + e.message]);
@@ -299,11 +324,15 @@ function rodar_(job) {
   }
 }
 
+function abasDoJob_(job) {
+  return [job.abaResult, job.abaLog].concat(job.abaPre ? [job.abaPre] : []);
+}
+
 function iniciarDoZero_(job) {
   const ss = SpreadsheetApp.getActive();
   const props = PropertiesService.getScriptProperties();
   const sel = carimbo_();
-  [job.abaResult, job.abaLog].forEach(function (nome) {
+  abasDoJob_(job).forEach(function (nome) {
     const sh = ss.getSheetByName(nome);
     if (sh && sh.getLastRow() > 1) {
       try { sh.copyTo(ss).setName(('Bkp_' + sel + '_' + nome).slice(0, 99)); } catch (e) {}
@@ -314,7 +343,7 @@ function iniciarDoZero_(job) {
   props.deleteProperty('trava_' + job.id);
   props.setProperty(job.propProx, '0');
   salvarEstado_(job, { fase: 'rodando', iniciadoEm: Date.now(), prox0: 0, atualizadoEm: Date.now() });
-  [[job.abaResult, job.cabResult], [job.abaLog, GERAL.CAB_LOG]].forEach(function (p) {
+  [[job.abaResult, job.cabResult], [job.abaLog, GERAL.CAB_LOG]].concat(job.abaPre ? [[job.abaPre, job.cabPre]] : []).forEach(function (p) {
     const sh = ss.getSheetByName(p[0]) || ss.insertSheet(p[0]);
     sh.clear();
     sh.getRange(1, 1, 1, p[1].length).setValues([p[1]]);
@@ -345,32 +374,134 @@ function lerCrescimento_(planilha, l, link) {
 }
 
 /**
- * Renovação e Simulador antigo: aba "Resumo da negociação".
- * Toda célula da coluna B que contém "Bonificação de material" com valor > 0 na coluna D
- * é um potencializador encontrado. Nenhuma célula encontrada => log.
+ * Etapa a (pré-filtro), aba "Resumo da negociação": toda célula da coluna B que contém
+ * "Bonificação de material" com valor > 0 na coluna D.
+ * Devolve { aba, achou, itens: [{rotulo, valor, linha}], erros }.
  */
-function lerResumo_(planilha, l, link) {
-  const out = { linhas: [], logs: [] };
+function lerResumo_(planilha) {
+  const out = { aba: true, achou: false, itens: [], erros: [] };
   const aba = achaAba_(planilha, RESUMO.ABA);
-  if (!aba) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + RESUMO.ABA + '" não encontrada'); return out; }
+  if (!aba) { out.aba = false; return out; }
   const ultima = aba.getLastRow();
-  const colMax = Math.max(RESUMO.COL_ROTULO, RESUMO.COL_VALOR);
-  const faixa = ultima > 0 ? aba.getRange(1, 1, ultima, colMax) : null;
-  const vals = faixa ? faixa.getValues() : [];
-  const disp = faixa ? faixa.getDisplayValues() : [];
-  let achou = false, comErro = 0;
+  if (ultima < 1) return out;
+  const faixa = aba.getRange(1, 1, ultima, Math.max(RESUMO.COL_ROTULO, RESUMO.COL_VALOR));
+  const vals = faixa.getValues(), disp = faixa.getDisplayValues();
+  let comErro = 0;
   for (let r = 0; r < vals.length; r++) {
     const rotulo = String(disp[r][RESUMO.COL_ROTULO - 1]).trim();
     if (norm_(rotulo).indexOf(RESUMO.ROTULO) < 0) continue;
-    achou = true;
+    out.achou = true;
     const bruto = vals[r][RESUMO.COL_VALOR - 1];
     if (String(bruto).charAt(0) === '#') { comErro++; continue; }
-    const preco = numPositivo_(bruto);
-    if (!(preco > 0)) continue; // bonificação sem valor: não é potencializador
-    out.linhas.push(baseRow_(l, link).concat(['', '', rotulo, preco, r + 1])); // série e ID em branco
+    const valor = numPositivo_(bruto);
+    if (valor > 0) out.itens.push({ rotulo: rotulo, valor: valor, linha: r + 1 });
   }
-  if (!achou) out.logs.push('PLANILHA INCONSISTENTE: célula "Bonificação de material" não encontrada na coluna B da aba "' + RESUMO.ABA + '"');
-  if (comErro) out.logs.push('PLANILHA INCONSISTENTE: ' + comErro + ' célula(s) com erro (#REF! etc.) na coluna D de "Bonificação de material"');
+  if (comErro) out.erros.push('PLANILHA INCONSISTENTE: ' + comErro + ' célula(s) com erro (#REF! etc.) na coluna D de "Bonificação de material"');
+  return out;
+}
+
+/** Renovação: pré-filtro + preços da aba "Material opcional". */
+function lerRenovacao_(planilha, l, link) { return lerPotencializador_(planilha, l, link, lerPrecoMat_); }
+/** Simulador antigo: pré-filtro + preços da aba Simulador, coluna W. */
+function lerSimuladorAntigo_(planilha, l, link) { return lerPotencializador_(planilha, l, link, lerPrecoB2C_); }
+
+function lerPotencializador_(planilha, l, link, lerPreco) {
+  const out = { linhas: [], pre: [], logs: [] };
+  const rs = lerResumo_(planilha);
+  if (!rs.aba) { out.logs.push('PLANILHA INCONSISTENTE: aba "' + RESUMO.ABA + '" não encontrada'); return out; }
+  if (!rs.achou) {
+    out.logs.push('PLANILHA INCONSISTENTE: célula "Bonificação de material" não encontrada na coluna B da aba "' + RESUMO.ABA + '"');
+    return out;
+  }
+  rs.erros.forEach(function (m) { out.logs.push(m); });
+  if (!rs.itens.length) return out; // sem material bonificado: não é potencializador
+
+  let precos = null;
+  if (!GERAL.SO_PREFILTRO) {
+    precos = lerPreco(planilha);
+    precos.erros.forEach(function (m) { out.logs.push('PLANILHA INCONSISTENTE: ' + m); });
+    precos.itens.forEach(function (p) {
+      out.linhas.push(baseRow_(l, link, p.marca).concat([p.origem, p.serie, p.id, p.material, p.preco, p.linha]));
+    });
+    if (!precos.itens.length && !precos.erros.length) {
+      out.logs.push('DIVERGÊNCIA: "Bonificação de material" > 0 no Resumo, mas nenhum preço > 0 na aba de preços');
+    }
+  }
+  const status = precos ? (precos.itens.length ? 'Sim (' + precos.itens.length + ')' : 'Não') : 'Não verificado';
+  rs.itens.forEach(function (it) {
+    out.pre.push(baseRow_(l, link).concat([it.rotulo, it.valor, it.linha, status]));
+  });
+  return out;
+}
+
+/** Etapa b da Renovação: itens com preço > 0 em "Material opcional" (col. T e col. O). */
+function lerPrecoMat_(planilha) {
+  const out = { itens: [], erros: [] };
+  const aba = achaAba_(planilha, MAT.ABA);
+  if (!aba) { out.erros.push('aba "' + MAT.ABA + '" não encontrada'); return out; }
+  [[MAT.REN, 'Renovação', 'Renovação (col. T)'], [MAT.AMP, 'Ampliação', 'Ampliação (col. O)']].forEach(function (s) {
+    const cfg = s[0];
+    const cab = String(aba.getRange(cfg.cabLinha, cfg.col).getDisplayValue());
+    if (norm_(cab).indexOf(MAT.CAB_ESPERADO) < 0) {
+      out.erros.push(s[2] + ': cabeçalho esperado "Input final do contrato" não encontrado na linha ' +
+        cfg.cabLinha + ' (encontrado: "' + cab.slice(0, 60) + '")');
+      return;
+    }
+    const n = cfg.fim - cfg.ini + 1;
+    const vals = aba.getRange(cfg.ini, 1, n, Math.max(cfg.col, MAT.COL_ID_MATERIAL)).getDisplayValues();
+    const limpa = function (x) { x = String(x || '').trim(); return x.charAt(0) === '#' ? '' : x; };
+    let comErro = 0;
+    for (let r = 0; r < n; r++) {
+      const v = String(vals[r][cfg.col - 1]).trim();
+      if (v === '') continue;
+      if (v.charAt(0) === '#') { comErro++; continue; }
+      if (!(numPositivo_(v) > 0)) continue; // só maior que zero
+      out.itens.push({
+        origem: s[1],
+        marca: limpa(vals[r][1]),                                              // B
+        serie: limpa(vals[r][3]),                                              // D
+        id: MAT.COL_ID_MATERIAL ? limpa(vals[r][MAT.COL_ID_MATERIAL - 1]) : '',
+        material: limpa(vals[r][4]) || limpa(vals[r][0]) || '(sem material)',  // E, senão A
+        preco: numPositivo_(v),
+        linha: cfg.ini + r,
+      });
+    }
+    if (comErro) out.erros.push(s[2] + ': ' + comErro + ' célula(s) com erro (#REF! etc.)');
+  });
+  return out;
+}
+
+/** Etapa b do Simulador antigo: séries com preço de venda B2C > 0 na coluna W. */
+function lerPrecoB2C_(planilha) {
+  const out = { itens: [], erros: [] };
+  const sim = planilha.getSheetByName(B2C.ABA);
+  if (!sim) { out.erros.push('aba "' + B2C.ABA + '" não encontrada'); return out; }
+  const b = B2C.CAB;
+  const cabs = sim.getRange(b.ini, B2C.COL, b.fim - b.ini + 1, 1).getDisplayValues();
+  if (!cabs.some(function (r) { return norm_(r[0]).indexOf(b.texto) >= 0; })) {
+    out.erros.push('cabeçalho "Preço de venda B2C" não encontrado na coluna W (linhas ' + b.ini + '-' + b.fim + ')');
+    return out;
+  }
+  const n = B2C.FIM - B2C.INI + 1;
+  const faixa = sim.getRange(B2C.INI, 1, n, B2C.COL); // A..W
+  const vals = faixa.getValues(), disp = faixa.getDisplayValues();
+  let comErro = 0;
+  for (let r = 0; r < n; r++) {
+    const bruto = vals[r][B2C.COL - 1];
+    if (bruto === '' || bruto === null) continue;
+    if (String(bruto).charAt(0) === '#') { comErro++; continue; }
+    if (!(numPositivo_(bruto) > 0)) continue; // só maior que zero
+    out.itens.push({
+      origem: String(disp[r][1]).trim(),                                       // segmento (B)
+      marca: '',
+      serie: String(disp[r][2]).trim(),                                        // série (C)
+      id: '',
+      material: String(disp[r][11]).trim() || String(disp[r][3]).trim(),       // L (col. 27), senão D (material 26)
+      preco: numPositivo_(bruto),
+      linha: B2C.INI + r,
+    });
+  }
+  if (comErro) out.erros.push(comErro + ' célula(s) com erro (#REF! etc.) na coluna W');
   return out;
 }
 

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  body { font-family: Arial, sans-serif; font-size: 13px; margin: 0; padding: 12px; color: #202124; }
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  .sub { color: #5f6368; font-size: 11px; margin-bottom: 10px; }
+  .card { border: 1px solid #dadce0; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+  .titulo { font-weight: bold; margin-bottom: 6px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; color: #fff; margin-left: 6px; }
+  .rodando { background: #1a73e8; } .aguardando { background: #f9ab00; } .concluido { background: #188038; }
+  .parado, .sem_atividade { background: #80868b; } .erro { background: #d93025; }
+  .barra { background: #e8eaed; border-radius: 6px; height: 14px; overflow: hidden; margin: 6px 0 4px; }
+  .barra > div { background: #1a73e8; height: 100%; width: 0; transition: width .4s; }
+  .linha { margin: 2px 0; } .cinza { color: #5f6368; }
+  .aviso { background: #fef7e0; border: 1px solid #f9ab00; border-radius: 6px; padding: 6px; margin: 6px 0; font-size: 12px; }
+  .erroBox { background: #fce8e6; border: 1px solid #d93025; }
+  button { margin: 6px 6px 0 0; padding: 6px 10px; border: 1px solid #dadce0; background: #fff; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  button:hover { background: #f1f3f4; } button:disabled { opacity: .5; cursor: default; }
+  .msg { font-size: 11px; color: #5f6368; margin-top: 4px; min-height: 14px; }
+</style>
+</head>
+<body>
+  <h2>Progresso das extrações</h2>
+  <div class="sub" id="atualizado">Carregando...</div>
+  <div id="erroTopo" class="aviso erroBox" style="display:none"></div>
+  <div id="cards"></div>
+
+<script>
+  var CARDS = {};
+  var carregando = false;
+
+  function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
+
+  function criarCard(d) {
+    var c = el('div', 'card');
+    var t = el('div', 'titulo', d.titulo); var b = el('span', 'badge', ''); t.appendChild(b); c.appendChild(t);
+    var barra = el('div', 'barra'); var fill = el('div'); barra.appendChild(fill); c.appendChild(barra);
+    var prog = el('div', 'linha'); c.appendChild(prog);
+    var bonif = el('div', 'linha'); c.appendChild(bonif);
+    var res = el('div', 'linha'); c.appendChild(res);
+    var log = el('div', 'linha cinza'); c.appendChild(log);
+    var tempo = el('div', 'linha cinza'); c.appendChild(tempo);
+    var avisos = el('div'); c.appendChild(avisos);
+    var drive = el('div', 'linha'); c.appendChild(drive);
+    var bs = el('div');
+    var bBaixar = el('button', '', 'Baixar CSV parcial'); var bDrive = el('button', '', 'Salvar CSV no Drive');
+    var bRetomar = el('button', '', 'Retomar agora'); var bParar = el('button', '', 'Parar');
+    [bBaixar, bDrive, bRetomar, bParar].forEach(function (x) { bs.appendChild(x); });
+    c.appendChild(bs);
+    var msg = el('div', 'msg'); c.appendChild(msg);
+    document.getElementById('cards').appendChild(c);
+
+    var all = [bBaixar, bDrive, bRetomar, bParar];
+    function ocupar(txt) { all.forEach(function (x) { x.disabled = true; }); msg.textContent = txt; }
+    function liberar(txt) { all.forEach(function (x) { x.disabled = false; }); msg.textContent = txt || ''; atualizar(); }
+    function falha(e) { liberar('Erro: ' + (e && e.message ? e.message : e)); }
+
+    bBaixar.onclick = function () {
+      ocupar('Montando CSV...');
+      google.script.run.withFailureHandler(falha).withSuccessHandler(function (r) {
+        var blob = new Blob([r.csv], { type: 'text/csv;charset=utf-8;' });
+        var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = r.nome;
+        document.body.appendChild(a); a.click(); a.remove();
+        liberar('Baixado: ' + r.nome + ' (' + r.linhas + ' linhas). Se não baixou, use "Salvar CSV no Drive".');
+      }).csvParcial(d.id);
+    };
+    bDrive.onclick = function () {
+      ocupar('Salvando no Drive...');
+      google.script.run.withFailureHandler(falha).withSuccessHandler(function (r) {
+        liberar('Salvo no Drive.'); drive.textContent = ''; var a = el('a', '', 'Abrir CSV salvo'); a.href = r.url; a.target = '_blank'; drive.appendChild(a);
+      }).salvarNoDrive(d.id);
+    };
+    bRetomar.onclick = function () {
+      ocupar('Rodando nesta janela (até ~5 min). Não feche o painel.');
+      google.script.run.withFailureHandler(falha).withSuccessHandler(function (r) { liberar('Retomar: ' + r.resultado); }).retomar(d.id);
+    };
+    bParar.onclick = function () {
+      if (!confirm('Parar esta extração? Dá para retomar depois sem perder o que foi coletado.')) return;
+      ocupar('Parando...');
+      google.script.run.withFailureHandler(falha).withSuccessHandler(function (r) {
+        liberar(r.emExecucao ? 'Vai parar no próximo salvamento (até ~1 min).' : 'Parado.');
+      }).parar(d.id);
+    };
+    return { badge: b, fill: fill, prog: prog, bonif: bonif, res: res, log: log, tempo: tempo, avisos: avisos, drive: drive, bRetomar: bRetomar, bParar: bParar };
+  }
+
+  var NOMES = { rodando: 'Rodando', aguardando: 'Aguardando próxima rodada', concluido: 'Concluído', parado: 'Parado', sem_atividade: 'Sem atividade', erro: 'Erro na última rodada' };
+
+  function fmtMin(m) { if (m == null) return '—'; if (m < 60) return m + ' min'; return Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; }
+
+  function render(lista) {
+    document.getElementById('erroTopo').style.display = 'none';
+    lista.forEach(function (d) {
+      var c = CARDS[d.id] || (CARDS[d.id] = criarCard(d));
+      c.badge.className = 'badge ' + d.fase; c.badge.textContent = NOMES[d.fase] || d.fase;
+      c.fill.style.width = d.pct + '%';
+      c.prog.textContent = d.prox + ' de ' + d.total + ' linhas percorridas (' + d.pct + '%)';
+      c.bonif.textContent = d.bonificados != null ? 'Com material bonificado: ' + d.bonificados + ' (aba de bonificados)' : '';
+      c.bonif.style.display = d.bonificados != null ? '' : 'none';
+      c.res.textContent = 'No CSV: ' + d.resultados + (d.bonificados != null ? ' linhas de preço (formato Beatriz)' : ' simuladores');
+      c.log.textContent = 'Log: ' + d.nLog + ' (sem acesso ' + d.log.semAcesso + ' | inconsistentes ' + d.log.inconsistente +
+        ' | erros ' + d.log.erro + (d.log.divergencia ? ' | divergências ' + d.log.divergencia : '') +
+        (d.log.outros ? ' | outros ' + d.log.outros : '') + ')';
+      var t = [];
+      if (d.segDesdeAtividade != null) t.push('Última atividade: há ' + (d.segDesdeAtividade < 90 ? d.segDesdeAtividade + ' s' : Math.round(d.segDesdeAtividade / 60) + ' min'));
+      if (d.etaMin != null && d.fase !== 'concluido') t.push('Estimativa para terminar: ~' + fmtMin(d.etaMin));
+      c.tempo.textContent = t.join(' | ') || '—';
+      c.avisos.textContent = '';
+      var parado = (d.fase === 'rodando' || d.fase === 'aguardando') && d.segDesdeAtividade != null && d.segDesdeAtividade > 720;
+      if (parado) c.avisos.appendChild(el('div', 'aviso', 'Sem atividade há mais de 12 min: pode ter travado. Clique em "Retomar agora".'));
+      if (!d.gatilho && (d.fase === 'rodando' || d.fase === 'aguardando')) c.avisos.appendChild(el('div', 'aviso', 'Nenhuma rodada agendada. Clique em "Retomar agora" se não terminou.'));
+      if (d.fase === 'erro' && d.erro) c.avisos.appendChild(el('div', 'aviso erroBox', 'Erro: ' + d.erro + ' (uma nova tentativa é agendada automaticamente).'));
+      if (!d.abasOk) c.avisos.appendChild(el('div', 'aviso', 'Abas de resultado/log não encontradas. Confira os nomes na configuração (' + d.abaResult + ').'));
+      if (d.csvUrl && !c.drive.firstChild) { var a = el('a', '', 'Abrir CSV final no Drive'); a.href = d.csvUrl; a.target = '_blank'; c.drive.appendChild(a); }
+    });
+    document.getElementById('atualizado').textContent = 'Atualiza sozinho a cada 6 s. Último: ' + new Date().toLocaleTimeString();
+  }
+
+  function atualizar() {
+    if (carregando) return; carregando = true;
+    google.script.run.withSuccessHandler(function (d) { carregando = false; render(d); })
+      .withFailureHandler(function (e) { carregando = false; var x = document.getElementById('erroTopo'); x.style.display = 'block'; x.textContent = 'Não consegui ler o status: ' + (e && e.message ? e.message : e); })
+      .statusPainel();
+  }
+  atualizar(); setInterval(atualizar, 6000);
+</script>
+</body>
+</html>
