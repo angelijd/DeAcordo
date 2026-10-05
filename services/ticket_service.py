@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, List, Optional
 
+from config.triagem_config import USE_MOCK_USERS
+
 logger = logging.getLogger("ticket_service")
 
 TICKETS_FILE = os.path.join(os.path.dirname(__file__), "..", "tickets_state.json")
@@ -52,6 +54,34 @@ def _is_sla_vencido(approval: Dict[str, Any]) -> bool:
     except ValueError:
         return False
     return datetime.now(BR_TZ) >= due
+
+
+def _sla_cumprido_em(approval: Dict[str, Any], decidido_em: datetime) -> Optional[bool]:
+    """
+    Compara o momento da decisão (aprovação/reprovação) com o prazo de SLA da
+    alçada. Calculado no momento da decisão porque approved_at/rejected_at são
+    guardados só como texto de exibição (sem ano/fuso), não comparáveis depois.
+    Retorna None se a alçada não tinha sla_due_at (ex.: criada antes dessa
+    funcionalidade existir).
+    """
+    due_str = approval.get("sla_due_at")
+    if not due_str:
+        return None
+    try:
+        due = datetime.fromisoformat(due_str)
+    except ValueError:
+        return None
+    return decidido_em <= due
+
+
+def _nominal_approver_name(approval: Dict[str, Any]) -> str:
+    """
+    Nome do titular nominal da alçada (quem a governança designou), mesmo que
+    um substituto tenha sido quem efetivamente decidiu.
+    """
+    if approval.get("is_substituted") and approval.get("original_approver_name"):
+        return approval["original_approver_name"]
+    return approval.get("approver_name") or "Aprovador"
 
 
 def _dentro_da_janela_de_cobranca() -> bool:
@@ -158,6 +188,8 @@ def create_ticket(
         "thread_permalink": thread_permalink,
         "status": "pending",  # pending | completed
         "created_at": datetime.now().strftime("%d/%m/%Y às %H:%M"),
+        "ano": datetime.now(BR_TZ).year,
+        "is_test": USE_MOCK_USERS,
         "approvals": approvals,
         "extra_data": extra_data or {},
         "acv": (extra_data or {}).get("acv") or "-",
@@ -208,11 +240,13 @@ def approve_step(
     if approval["status"] == "approved":
         return {"success": True, "already_approved": True, "ticket": ticket}
 
-    now_str = datetime.now().strftime("%d/%m às %Hh%M")
+    agora_br = datetime.now(BR_TZ)
+    now_str = agora_br.strftime("%d/%m às %Hh%M")
     approval["status"] = "approved"
     approval["approved_by_id"] = user_id
     approval["approved_by_name"] = user_name
     approval["approved_at"] = now_str
+    approval["sla_cumprido"] = _sla_cumprido_em(approval, agora_br)
 
     # Verifica se todas as alçadas foram aprovadas
     all_completed = all(a["status"] == "approved" for a in ticket["approvals"].values())
@@ -253,8 +287,10 @@ def reject_step(
     if not approval:
         return {"success": False, "error": "Alçada não encontrada."}
 
-    now_str = datetime.now().strftime("%d/%m às %Hh%M")
+    agora_br = datetime.now(BR_TZ)
+    now_str = agora_br.strftime("%d/%m às %Hh%M")
     approval["status"] = "rejected"
+    approval["sla_cumprido"] = _sla_cumprido_em(approval, agora_br)
     approval["rejected_by_id"] = user_id
     approval["rejected_by_name"] = user_name
     approval["rejected_at"] = now_str
@@ -859,3 +895,135 @@ def export_to_csv(out_dir: str) -> Dict[str, str]:
                 writer.writerow(row)
 
     return {"tickets_csv": tickets_path, "approvals_csv": approvals_path}
+
+
+# =========================================================================
+# RETENÇÃO DE FIM DE ANO (produtividade apenas - descarta o resto)
+# =========================================================================
+# Só rastreia as alçadas Comercial e Operações (decisão: as demais não
+# entram por ora). "Aprovador responsável" = titular nominal da alçada,
+# mesmo que um substituto tenha decidido de fato. Identificação por nome,
+# não por ID. Tickets de teste/mock são excluídos da contagem.
+
+PRODUCTIVITY_ALCADAS = ("comercial", "operacoes")
+
+
+def _summary_file_path(year: int) -> str:
+    """Mesma pasta de TICKETS_FILE, pra testes que redirecionam TICKETS_FILE também isolarem este arquivo."""
+    return os.path.join(os.path.dirname(TICKETS_FILE), f"productivity_summary_{year}.json")
+
+
+def _is_ticket_test(ticket: Dict[str, Any]) -> bool:
+    """
+    Indica se o ticket foi gerado em modo de teste/mock. Tickets criados
+    depois dessa marcação existir já têm is_test salvo; para os anteriores,
+    usa como fallback se o consultor não tem um ID real do Slack.
+    """
+    if "is_test" in ticket:
+        return bool(ticket["is_test"])
+    consultor_id = ticket.get("consultor_id") or ""
+    return not consultor_id.startswith(("U", "W"))
+
+
+def _ticket_year(ticket: Dict[str, Any]) -> Optional[int]:
+    """Ano do ticket: usa o campo 'ano' se existir, senão extrai de created_at."""
+    if ticket.get("ano"):
+        return ticket["ano"]
+    created_at = ticket.get("created_at") or ""
+    try:
+        return int(created_at.split("/")[-1].split(" ")[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def compute_productivity_summary(year: int, exclude_test: bool = True) -> Dict[str, Any]:
+    """
+    Agrega, para o ano informado, só o necessário para analisar produtividade:
+    quantidade de contratos (por consultor) e SLA no prazo/vencido das
+    alçadas Comercial e Operações (por titular nominal). Não inclui CNPJ,
+    valores, texto livre nem qualquer outro dado comercial sensível.
+    Não grava nada - só lê tickets_state.json e devolve o resumo.
+    """
+    tickets = load_tickets()
+
+    total_contratos = 0
+    por_consultor: Dict[str, int] = {}
+    sla_por_alcada: Dict[str, Dict[str, Any]] = {
+        alcada: {"no_prazo": 0, "vencido": 0, "por_aprovador": {}}
+        for alcada in PRODUCTIVITY_ALCADAS
+    }
+
+    for ticket in tickets.values():
+        if _ticket_year(ticket) != year:
+            continue
+        if exclude_test and _is_ticket_test(ticket):
+            continue
+
+        total_contratos += 1
+        consultor = ticket.get("consultor_name") or "Desconhecido"
+        por_consultor[consultor] = por_consultor.get(consultor, 0) + 1
+
+        for alcada in PRODUCTIVITY_ALCADAS:
+            approval = ticket.get("approvals", {}).get(alcada)
+            if not approval or approval.get("status") not in ("approved", "rejected"):
+                continue
+
+            cumprido = approval.get("sla_cumprido")
+            if cumprido is None:
+                continue  # decidida antes de sla_due_at existir - não dá pra saber
+
+            aprovador = _nominal_approver_name(approval)
+            bucket = sla_por_alcada[alcada]
+            chave = "no_prazo" if cumprido else "vencido"
+            bucket[chave] += 1
+            por_aprovador = bucket["por_aprovador"].setdefault(aprovador, {"no_prazo": 0, "vencido": 0})
+            por_aprovador[chave] += 1
+
+    return {
+        "ano": year,
+        "gerado_em": datetime.now(BR_TZ).isoformat(),
+        "total_contratos": total_contratos,
+        "contratos_por_consultor": por_consultor,
+        "sla_comercial": sla_por_alcada["comercial"],
+        "sla_operacoes": sla_por_alcada["operacoes"],
+    }
+
+
+def purge_tickets_keep_summary(year: int, confirm: bool = False) -> Dict[str, Any]:
+    """
+    Ação DESTRUTIVA e deliberada de fim de ano: calcula o resumo de
+    produtividade do ano, grava em productivity_summary_<year>.json, e
+    remove de tickets_state.json os tickets daquele ano já encerrados
+    (aprovados ou reprovados) - os ainda pendentes nunca são descartados,
+    independente do ano.
+    Sem confirm=True só calcula e devolve o resumo, sem tocar em nada.
+    """
+    summary = compute_productivity_summary(year)
+
+    if not confirm:
+        return {
+            "executado": False,
+            "summary": summary,
+            "aviso": "Nada foi descartado. Rode de novo com confirm=True pra efetivar.",
+        }
+
+    summary_path = _summary_file_path(year)
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+    tickets = load_tickets()
+    mantidos = {}
+    descartados = 0
+    for key, ticket in tickets.items():
+        if _ticket_year(ticket) == year and ticket.get("status") != "pending":
+            descartados += 1
+            continue
+        mantidos[key] = ticket
+
+    save_tickets(mantidos)
+    logger.warning(
+        f"Purge de {year}: {descartados} ticket(s) descartado(s) de tickets_state.json, "
+        f"resumo de produtividade salvo em {summary_path}."
+    )
+
+    return {"executado": True, "summary": summary, "tickets_descartados": descartados, "summary_path": summary_path}
