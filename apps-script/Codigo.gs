@@ -174,7 +174,7 @@ function statusPainel() {
 function csvParcial(id) {
   const job = JOBS[id];
   const csv = montarCsv_(job);
-  return { nome: job.csvPrefixo + 'PARCIAL_' + carimbo_() + '.csv', csv: '﻿' + csv.texto, linhas: csv.linhas };
+  return { nome: job.csvPrefixo + 'PARCIAL_' + carimbo_() + '.csv', csv: '\ufeff' + csv.texto, linhas: csv.linhas };
 }
 
 function salvarNoDrive(id) {
@@ -517,7 +517,7 @@ function montarCsv_(job) {
 
 function gerarCsvDrive_(job) {
   const csv = montarCsv_(job);
-  const arq = DriveApp.createFile(job.csvPrefixo + carimbo_() + '.csv', '﻿' + csv.texto, MimeType.CSV);
+  const arq = DriveApp.createFile(job.csvPrefixo + carimbo_() + '.csv', '\ufeff' + csv.texto, MimeType.CSV);
   return arq.getUrl();
 }
 
@@ -553,7 +553,7 @@ function numPositivo_(v) {
   return parseFloat(s.replace(/^R\$\s*/, '').replace(/\./g, '').replace(',', '.'));
 }
 function norm_(t) {
-  return String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  return String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 }
 function achaAba_(planilha, nome) {
   const alvo = norm_(nome);
