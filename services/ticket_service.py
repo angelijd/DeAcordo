@@ -773,10 +773,11 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
 # no formato tabular antes de decidir onde eles vão ser carregados.
 
 TICKET_ROW_FIELDS = [
-    "ticket_key", "channel_id", "thread_ts", "escola", "cnpj", "inep",
+    "ticket_key", "channel_id", "thread_ts", "thread_permalink", "escola", "cnpj", "inep",
     "consultor_id", "consultor_name", "frente", "marcas", "alunado", "acv",
     "rede_grupo", "nome_rede", "cnpjs_rede", "tem_divida_alta", "valor_divida",
     "marcas_com_inviab", "nomes_marcas_inviab", "link_sf", "simulador_link",
+    "contexto_geral", "mais_excecoes", "excecao_por_marca",
     "status", "created_at", "completed_at",
     "rejected_by_id", "rejected_by_name", "rejection_reason_label", "rejection_details",
 ]
@@ -788,6 +789,15 @@ APPROVAL_ROW_FIELDS = [
     "rejected_by_id", "rejected_by_name", "rejected_at", "reason_key", "reason_label", "details",
     "is_substituted", "original_approver_id", "original_approver_name",
     "substitute_until", "substitution_reason", "substituted_by", "substituted_at",
+]
+
+# 1 linha por exceção selecionada no formulário (até 5 por ticket). O status é
+# derivado das alçadas que essa exceção aciona (comercial e/ou operações) -
+# exceções continuam sendo aprovadas em conjunto por alçada, não uma a uma;
+# isso só reflete, pra leitura/relatório, em que pé cada exceção está.
+EXCEPTION_ROW_FIELDS = [
+    "ticket_key", "numero", "nome", "contexto",
+    "aprovador_comercial", "aprovador_operacoes", "status",
 ]
 
 
@@ -802,6 +812,7 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "ticket_key": ticket.get("key"),
         "channel_id": ticket.get("channel_id"),
         "thread_ts": ticket.get("thread_ts"),
+        "thread_permalink": ticket.get("thread_permalink"),
         "escola": ticket.get("escola"),
         "cnpj": extra.get("cnpj") or ticket.get("cnpj"),
         "inep": extra.get("inep") or ticket.get("inep"),
@@ -820,6 +831,9 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "nomes_marcas_inviab": extra.get("nomes_marcas_inviab"),
         "link_sf": extra.get("link_sf"),
         "simulador_link": extra.get("simulador_link"),
+        "contexto_geral": extra.get("contexto_geral"),
+        "mais_excecoes": extra.get("mais_excecoes", False),
+        "excecao_por_marca": _excecao_por_marca(extra),
         "status": ticket.get("status"),
         "created_at": ticket.get("created_at"),
         "completed_at": ticket.get("completed_at"),
@@ -828,6 +842,67 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "rejection_reason_label": ticket.get("rejection_reason_label"),
         "rejection_details": ticket.get("rejection_details"),
     }
+
+
+def _excecao_por_marca(extra: Dict[str, Any]) -> str:
+    """
+    Detalhe de cada exceção do ticket, repetido para cada marca selecionada
+    no formulário (coluna MARCAS). Exceções são aprovadas no nível do ticket,
+    não por marca individual, então todas as marcas selecionadas compartilham
+    o mesmo conjunto de exceções.
+    """
+    excecoes = extra.get("excecoes") or []
+    if not excecoes:
+        return ""
+
+    marcas_str = extra.get("marcas") or ""
+    marcas = [m.strip() for m in marcas_str.split(",") if m.strip()]
+    if not marcas:
+        return ""
+
+    detalhe_excecoes = "; ".join(f"{exc.get('nome')} ({exc.get('contexto')})" for exc in excecoes)
+    return " | ".join(f"{marca}: {detalhe_excecoes}" for marca in marcas)
+
+
+def _excecao_status(excecao: Dict[str, Any], approvals: Dict[str, Any]) -> str:
+    """
+    Deriva o status de 1 exceção a partir das alçadas que ela aciona.
+    Uma exceção pode exigir Comercial, Operações, ambas ou nenhuma (regra "-").
+    """
+    relevantes = []
+    if excecao.get("aprovador_comercial") and excecao["aprovador_comercial"] != "-":
+        relevantes.append(approvals.get("comercial", {}).get("status", "pending"))
+    if excecao.get("aprovador_operacoes") and excecao["aprovador_operacoes"] != "-":
+        relevantes.append(approvals.get("operacoes", {}).get("status", "pending"))
+
+    if not relevantes:
+        return "sem_aprovacao_necessaria"
+    if "rejected" in relevantes:
+        return "rejected"
+    if all(s == "approved" for s in relevantes):
+        return "approved"
+    return "pending"
+
+
+def to_tabular_exception_records(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Achata as exceções selecionadas no formulário (até 5 por ticket) em linhas
+    de uma tabela filha, 1 linha por exceção, pronta para join por ticket_key.
+    """
+    extra = ticket.get("extra_data", {}) or {}
+    approvals = ticket.get("approvals", {}) or {}
+    rows = []
+    for exc in extra.get("excecoes", []):
+        rows.append({
+            "ticket_key": ticket.get("key"),
+            "numero": exc.get("numero"),
+            "nome": exc.get("nome"),
+            "contexto": exc.get("contexto"),
+            "aprovador_comercial": exc.get("aprovador_comercial"),
+            "aprovador_operacoes": exc.get("aprovador_operacoes"),
+            "status": _excecao_status(exc, approvals),
+        })
+    return rows
 
 
 def to_tabular_approval_records(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -870,16 +945,17 @@ def to_tabular_approval_records(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def export_to_csv(out_dir: str) -> Dict[str, str]:
     """
-    Exporta todos os tickets persistidos para 2 CSVs (tickets.csv e
-    approvals.csv), prontos para carregar em qualquer tabela (BigQuery,
-    Sheets, Postgres, etc.) no dia em que houver um destino definido.
-    Retorna os caminhos dos arquivos gerados.
+    Exporta todos os tickets persistidos para 3 CSVs (tickets.csv,
+    approvals.csv e exceptions.csv), prontos para carregar em qualquer
+    tabela (BigQuery, Sheets, Postgres, etc.) no dia em que houver um
+    destino definido. Retorna os caminhos dos arquivos gerados.
     """
     os.makedirs(out_dir, exist_ok=True)
     tickets = load_tickets()
 
     tickets_path = os.path.join(out_dir, "tickets.csv")
     approvals_path = os.path.join(out_dir, "approvals.csv")
+    exceptions_path = os.path.join(out_dir, "exceptions.csv")
 
     with open(tickets_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=TICKET_ROW_FIELDS)
@@ -894,7 +970,18 @@ def export_to_csv(out_dir: str) -> Dict[str, str]:
             for row in to_tabular_approval_records(ticket):
                 writer.writerow(row)
 
-    return {"tickets_csv": tickets_path, "approvals_csv": approvals_path}
+    with open(exceptions_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=EXCEPTION_ROW_FIELDS)
+        writer.writeheader()
+        for ticket in tickets.values():
+            for row in to_tabular_exception_records(ticket):
+                writer.writerow(row)
+
+    return {
+        "tickets_csv": tickets_path,
+        "approvals_csv": approvals_path,
+        "exceptions_csv": exceptions_path,
+    }
 
 
 # =========================================================================
