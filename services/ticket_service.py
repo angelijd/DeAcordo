@@ -777,7 +777,7 @@ TICKET_ROW_FIELDS = [
     "consultor_id", "consultor_name", "frente", "marcas", "alunado", "acv",
     "rede_grupo", "nome_rede", "cnpjs_rede", "tem_divida_alta", "valor_divida",
     "marcas_com_inviab", "nomes_marcas_inviab", "link_sf", "simulador_link",
-    "contexto_geral", "mais_excecoes",
+    "contexto_geral", "mais_excecoes", "excecao_por_marca",
     "status", "created_at", "completed_at",
     "rejected_by_id", "rejected_by_name", "rejection_reason_label", "rejection_details",
 ]
@@ -833,6 +833,7 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "simulador_link": extra.get("simulador_link"),
         "contexto_geral": extra.get("contexto_geral"),
         "mais_excecoes": extra.get("mais_excecoes", False),
+        "excecao_por_marca": _excecao_por_marca(extra),
         "status": ticket.get("status"),
         "created_at": ticket.get("created_at"),
         "completed_at": ticket.get("completed_at"),
@@ -841,6 +842,26 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "rejection_reason_label": ticket.get("rejection_reason_label"),
         "rejection_details": ticket.get("rejection_details"),
     }
+
+
+def _excecao_por_marca(extra: Dict[str, Any]) -> str:
+    """
+    Detalhe de cada exceção do ticket, repetido para cada marca selecionada
+    no formulário (coluna MARCAS). Exceções são aprovadas no nível do ticket,
+    não por marca individual, então todas as marcas selecionadas compartilham
+    o mesmo conjunto de exceções.
+    """
+    excecoes = extra.get("excecoes") or []
+    if not excecoes:
+        return ""
+
+    marcas_str = extra.get("marcas") or ""
+    marcas = [m.strip() for m in marcas_str.split(",") if m.strip()]
+    if not marcas:
+        return ""
+
+    detalhe_excecoes = "; ".join(f"{exc.get('nome')} ({exc.get('contexto')})" for exc in excecoes)
+    return " | ".join(f"{marca}: {detalhe_excecoes}" for marca in marcas)
 
 
 def _excecao_status(excecao: Dict[str, Any], approvals: Dict[str, Any]) -> str:

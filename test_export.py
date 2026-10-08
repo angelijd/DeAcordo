@@ -62,6 +62,9 @@ with tempfile.TemporaryDirectory() as tmp:
     assert row["frente"] == "(CE) Inbound"
     assert row["thread_permalink"] == "https://arco.slack.com/archives/C123/p111222"
     assert row["contexto_geral"] == "Negociação em andamento com a rede."
+    assert row["excecao_por_marca"] == (
+        "SAS: Exclusividade de fornecimento - Escola (Escola pediu exclusividade por 2 anos.)"
+    )
 
     approval_rows = to_tabular_approval_records(ticket)
     assert len(approval_rows) == 2
@@ -84,5 +87,34 @@ with tempfile.TemporaryDirectory() as tmp:
     assert os.path.exists(paths["tickets_csv"])
     assert os.path.exists(paths["approvals_csv"])
     assert os.path.exists(paths["exceptions_csv"])
+
+    # Múltiplas marcas e exceções: cada marca recebe o mesmo detalhe de exceções
+    ticket2 = create_ticket(
+        channel_id="C456",
+        thread_ts="333.444",
+        escola="Escola Teste 2",
+        consultor_id="U_CONSULTOR",
+        consultor_name="Consultor Teste",
+        details_text="> texto da solicitação",
+        approvals_list=[{
+            "key": "comercial",
+            "role_title": "👤 APROVAÇÃO COMERCIAL",
+            "short_label": "Comercial",
+            "approver_id": "U_LIDER",
+            "approver_name": "Líder Teste",
+        }],
+        extra_data={
+            "marcas": "SAS, Lives",
+            "excecoes": [
+                {"numero": 1, "nome": "Exceção A", "contexto": "Contexto A"},
+                {"numero": 2, "nome": "Exceção B", "contexto": "Contexto B"},
+            ],
+        },
+    )
+    row2 = to_tabular_record(ticket2)
+    assert row2["excecao_por_marca"] == (
+        "SAS: Exceção A (Contexto A); Exceção B (Contexto B) | "
+        "Lives: Exceção A (Contexto A); Exceção B (Contexto B)"
+    )
 
 print("SUCCESS: exportação tabular (CSV) validada com sucesso!")
