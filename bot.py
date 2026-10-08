@@ -677,6 +677,18 @@ def handle_submission(ack, body, client):
             "aprov_ops_tag": ops_tag,
         })
 
+    # Versão estruturada das exceções, para salvar no ticket (fora do texto livre)
+    excecoes_estruturadas = [
+        {
+            "numero": item["numero"],
+            "nome": item["nome"],
+            "contexto": item["contexto"],
+            "aprovador_comercial": item["aprov_com_tag"],
+            "aprovador_operacoes": item["aprov_ops_tag"],
+        }
+        for item in excecoes_detalhes
+    ]
+
     # Aprovador Automático de Inviabilidade (Regras de Governança por Marca)
     def checar_inviabilidade(pct_str: Optional[str]) -> bool:
         if not pct_str:
@@ -848,16 +860,26 @@ def handle_submission(ack, body, client):
             "scope_reason": f"Exceção operacional identificada: {exc_nome} (Regra de Operações exigida).",
         })
 
-    # Alçada Inviabilidade (se alguma marca tiver inviabilidade)
-    if marcas_com_inviab:
-        nomes_inviab = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab])
+    # Alçada Inviabilidade - Core e Plus são aprovações independentes (cada uma com seu próprio status)
+    if core_inviab_vals:
+        nomes_inviab_core = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab if m in MARCAS_CORE])
         approvals_list.append({
-            "key": "inviabilidade",
-            "role_title": "🚨 APROVAÇÃO INVIABILIDADE",
-            "short_label": "Inviabilidade",
+            "key": "inviabilidade_core",
+            "role_title": "🚨 APROVAÇÃO INVIABILIDADE (Core)",
+            "short_label": "Inviabilidade Core",
             "approver_id": "",
             "approver_name": aprovador_inviab_nome,
-            "scope_reason": f"Inviabilidade identificada na(s) marca(s): {nomes_inviab}.",
+            "scope_reason": f"Inviabilidade identificada na(s) marca(s) Core: {nomes_inviab_core}.",
+        })
+    if plus_inviab_vals:
+        nomes_inviab_plus = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab if m not in MARCAS_CORE])
+        approvals_list.append({
+            "key": "inviabilidade_plus",
+            "role_title": "🚨 APROVAÇÃO INVIABILIDADE (Plus)",
+            "short_label": "Inviabilidade Plus",
+            "approver_id": "",
+            "approver_name": aprovador_inviab_nome,
+            "scope_reason": f"Inviabilidade identificada na(s) marca(s) Plus: {nomes_inviab_plus}.",
         })
 
     # Alçada Especial Dívida (> R$ 50k)
@@ -891,6 +913,9 @@ def handle_submission(ack, body, client):
         "cnpjs_rede": data.get("cnpjs_rede") or "",
         "inviabilidades_pct": inviabilidades,
         "simulador_link": link_simulador if link_simulador != "-" else "",
+        "contexto_geral": data.get("contexto_geral") or "",
+        "excecoes": excecoes_estruturadas,
+        "mais_excecoes": len(excecoes_estruturadas) > 1,
     }
 
     # 1. Posta a MENSAGEM ÚNICA no canal
