@@ -964,15 +964,6 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     elif not is_rejected:
         # Ações administrativas e de segurança apenas se o ticket ainda estiver pendente
         blocks.append({
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "🔒 *Validação de Identidade:* Apenas os aprovadores indicados podem aprovar/reprovar suas respectivas alçadas."
-                }
-            ]
-        })
-        blocks.append({
             "type": "actions",
             "block_id": "triagem_actions_block",
             "elements": [
