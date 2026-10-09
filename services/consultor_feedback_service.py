@@ -102,8 +102,7 @@ def send_consultor_progress_dm(
                     "text": (
                         f"{_arroba(consultor_name)}, todas as alçadas da escola *{escola}* deliberaram. Ajustes pedidos:\n"
                         f"{_resumo_ajustes(ticket)}\n\n"
-                        f"*Pipeline ({approved_count}/{total_count} aprovadas):*\n{stepper_text}\n\n"
-                        "📄 *Próximo Passo:* faça os ajustes e envie um novo formulário no canal de negociações."
+                        f"*Pipeline ({approved_count}/{total_count} aprovadas):*\n{stepper_text}"
                     )[:2900],
                 },
             },
