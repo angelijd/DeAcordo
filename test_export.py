@@ -84,9 +84,9 @@ with tempfile.TemporaryDirectory() as tmp:
     assert exception_rows[0]["status"] == "approved", "exceção só depende da alçada Comercial, que foi aprovada"
 
     paths = export_to_csv(os.path.join(tmp, "export"))
-    assert os.path.exists(paths["tickets_csv"])
-    assert os.path.exists(paths["approvals_csv"])
-    assert os.path.exists(paths["exceptions_csv"])
+    assert os.path.exists(paths["tickets_csv_crescimento"])
+    assert os.path.exists(paths["approvals_csv_crescimento"])
+    assert os.path.exists(paths["exceptions_csv_crescimento"])
 
     # Múltiplas marcas e exceções: cada marca recebe o mesmo detalhe de exceções
     ticket2 = create_ticket(
