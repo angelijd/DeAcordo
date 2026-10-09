@@ -432,6 +432,14 @@ def substitute_approver(
     }
 
 
+def _mencao_aprovador(apprv: Dict[str, Any]) -> str:
+    """Menção clicável quando há Slack ID real; senão o nome em texto."""
+    approver_id = apprv.get("approver_id") or ""
+    if approver_id.startswith(("U", "W")):
+        return f"<@{approver_id}>"
+    return f"@{apprv.get('approver_name') or 'Aprovador'}"
+
+
 def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Gera os blocos do Block Kit para o card de status na thread.
@@ -517,7 +525,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "block_id": f"approval_section_{key}",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{role_title}:* @{approver_name}{substitute_badge}\n*Status:* ⏹️ *Encerrado (Ticket Reprovado)*"
+                        "text": f"*{role_title}:* {_mencao_aprovador(apprv)}{substitute_badge}\n*Status:* ⏹️ *Encerrado (Ticket Reprovado)*"
                     }
                 })
             else:
@@ -527,7 +535,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "block_id": f"approval_section_{key}",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{role_title}:* @{approver_name}{substitute_badge}\n*Status:* ⏳ *Aguardando deliberação*"
+                        "text": f"*{role_title}:* {_mencao_aprovador(apprv)}{substitute_badge}\n*Status:* ⏳ *Aguardando deliberação*"
                     }
                 })
                 blocks.append({

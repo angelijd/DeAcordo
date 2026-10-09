@@ -954,7 +954,13 @@ def handle_submission(ack, body, client):
     for item in excecoes_detalhes:
         aprovs = [a for a in (item.get("aprov_com_tag"), item.get("aprov_ops_tag")) if a and a != "-"]
         aprovs = list(dict.fromkeys(aprovs))
-        excecoes_post.append(f"*{item['numero']}.* {item['nome']} → {', '.join(aprovs) or 'sem aprovador mapeado'}")
+        if aprovs:
+            destino = ", ".join(aprovs)
+        elif "não precisa" in str(item.get("regra_comercial", "")).lower():
+            destino = "não precisa de aprovação"
+        else:
+            destino = "⚠️ sem aprovador definido na regra"
+        excecoes_post.append(f"*{item['numero']}.* {item['nome']} → {destino}")
 
     post_view = {
         "titulo": f"{'🔄 Renovação' if tipo_fluxo == FLUXO_RENOVACAO else '🌱 Crescimento'} · {data.get('razao_social') or 'Escola'}",
@@ -973,7 +979,7 @@ def handle_submission(ack, body, client):
     approvals_list = []
 
     # Alçada Comercial (Líder Direto do Consultor)
-    lider_display = format_mention(lider_id).replace("@", "").strip() if lider_id else "Líder Direto"
+    lider_display = "Líder Direto" if (not lider_id or lider_id.startswith(("U", "W"))) else lider_id
     approvals_list.append({
         "key": "comercial",
         "role_title": "👤 APROVAÇÃO COMERCIAL",
@@ -1010,7 +1016,7 @@ def handle_submission(ack, body, client):
 
     if tipo_fluxo == FLUXO_RENOVACAO:
         # Alçadas específicas da Renovação: Aprovador do Simulador e Aprovador N3
-        aprovador_simulador_display = aprovador_simulador_tag.replace("@", "").strip()
+        aprovador_simulador_display = "Aprovador do Simulador" if (data.get("aprovador_simulador") or "").startswith(("U", "W")) else aprovador_simulador_tag.lstrip("@")
         approvals_list.append({
             "key": "aprovador_simulador",
             "role_title": "📊 APROVAÇÃO SIMULADOR (Renovação)",
