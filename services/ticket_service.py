@@ -298,8 +298,7 @@ def mensagem_conclusao(ticket: Dict[str, Any]) -> str:
         linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
         return (
             "❌ *SOLICITAÇÃO REPROVADA.* Todos os decisores deliberaram. Ajustes pedidos:\n"
-            f"{linhas}\n"
-            "O consultor ajusta a proposta e envia um novo formulário."
+            f"{linhas}"
         )
     reprovadas = excecoes_reprovadas(ticket)
     if reprovadas:
@@ -531,7 +530,7 @@ def _linha_status(ticket: Dict[str, Any]) -> str:
 
     if status == "rejected":
         linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
-        return f"*Reprovada* · ajustes pedidos:\n{linhas}\nPara seguir, o consultor ajusta a proposta e envia um novo formulário."
+        return f"*Reprovada* · ajustes pedidos:\n{linhas}"
 
     if status == "completed":
         reprovadas = excecoes_reprovadas(ticket)
