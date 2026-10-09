@@ -10,7 +10,7 @@ Aplicativo nativo para o Slack da **Arco Educação (Ciclo Comercial 2026/27)** 
 * **Zero Retrabalho Cadastral:** Preenchimento automático de Razão Social e Código INEP ao digitar o CNPJ da escola (com cruzamento no Censo Escolar Privado).
 * **Matriz de Governança Determinística (60+ Regras):** Roteamento automático de alçadas para Líder Direto, Logística, Pedagógico, Produtos, Jurídico, Financeiro e Diretoria N3 sem erro humano.
 * **Substituição por Ausência (@triagem):** Módulo de contingência para transferir alçadas temporariamente durante férias ou licenças, com prazo de vigência definido e auditoria na thread.
-* **Cobrança Inteligente 2x ao Dia:** Robô de lembretes (11h e 17h, seg-sex) que cobra cirurgicamente apenas os decisores com pendências ativas.
+* **Cobrança Inteligente 2x ao Dia:** Robô de lembretes (9h e 14h, seg-sex) que cobra cirurgicamente apenas os decisores com pendências ativas.
 * **Ativação por Botão Fixo no Canal:** Painel permanente com botão interativo no canal, permitindo a abertura de solicitações mesmo com envio de mensagens bloqueado.
 
 ---
@@ -34,7 +34,7 @@ graph TD
     
     J --> K{"Todas as Alçadas Aprovadas?"}
     K -- "Sim" --> L["🎉 Ticket Concluído & Liberado para Emissão de Contrato"]
-    K -- "Não" --> M["⏳ Cobrança Inteligente 2x/dia (11h e 17h nos pendentes)"]
+    K -- "Não" --> M["⏳ Cobrança Inteligente 2x/dia (9h e 14h nos pendentes)"]
 ```
 
 ---

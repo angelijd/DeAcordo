@@ -38,8 +38,25 @@ modal_renovacao = build_aprovacoes_modal(
 block_ids_renovacao = [b.get("block_id") for b in modal_renovacao["blocks"]]
 assert "reajuste_liquido_block" in block_ids_renovacao
 assert "aprovador_simulador_block" in block_ids_renovacao
-assert "aprovador_n3_block" in block_ids_renovacao
+assert "aprovador_n3_block" not in block_ids_renovacao
+assert "aprovador_n3_info_block" in block_ids_renovacao
 assert not any((b or "").startswith("inviab_block_") for b in block_ids_renovacao)
 frente_block = next(b for b in modal_renovacao["blocks"] if b.get("block_id") == "frente_block")
-assert [o["value"] for o in frente_block["element"]["options"]] == ["CSE/CSP"]
+assert [o["value"] for o in frente_block["element"]["options"]] == ["CSE", "CSP"]
 print("SUCCESS: Campos específicos de Renovação validados!")
+
+# N3 automático por Frente + Marca
+from config.n3_config import resolver_aprovadores_n3
+
+n3 = resolver_aprovadores_n3("CSE", ["COC"])
+assert [(p["nome"], p["marcas"]) for p in n3] == [("Camila Lima Moreira", ["COC"])]
+
+n3 = resolver_aprovadores_n3("CSP", ["COC", "Geekie", "SAE", "CQT (Conquista)"])
+assert [p["nome"] for p in n3] == ["Renato Judice", "Andreia Moraes", "Juliana Loures"]
+assert n3[2]["marcas"] == ["SAE", "CQT (Conquista)"]
+
+n3 = resolver_aprovadores_n3("CSE", ["MARALTO", "GF"])
+assert len(n3) == 1 and n3[0]["nome"] == "Livia Archeti"
+
+assert resolver_aprovadores_n3("(CE) Inbound", ["COC"]) == []
+print("SUCCESS: Aprovador N3 automático validado!")

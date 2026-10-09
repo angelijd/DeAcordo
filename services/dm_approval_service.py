@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from config.triagem_config import USE_MOCK_USERS
+from services.ticket_service import confirmar_aprovacao
 
 logger = logging.getLogger("dm_approval_service")
 
@@ -39,7 +40,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
         approver_name = apprv.get("approver_name", "Aprovador")
         role_title = apprv.get("role_title", "Aprovação")
         short_label = apprv.get("short_label", "Aprovação")
-        scope_reason = apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial."
+        scope_reason = apprv.get("scope_reason") or ""
 
         is_mock_target = False
         target_user_id = None
@@ -90,13 +91,14 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             })
 
             # Bloco em destaque com a razão específica da deliberação
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*📌 O que requer sua aprovação ({short_label}):*\n> {scope_reason}"
-                }
-            })
+            if scope_reason:
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*📌 O que requer sua aprovação ({short_label}):*\n> {scope_reason}"
+                    }
+                })
 
             # Botões de ação em 1 clique
             blocks.append({
@@ -109,6 +111,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
                         "value": f"{ticket_key}:{key}",
                         "text": {"type": "plain_text", "text": f"✅ Aprovar {short_label}", "emoji": True},
                         "style": "primary",
+                        "confirm": confirmar_aprovacao(apprv.get("checklist_label") or short_label, escola),
                     },
                     {
                         "type": "button",
@@ -132,9 +135,9 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             })
 
             # Envia diretamente para o usuário
-            msg_resp = client.chat_postMessage(
+            msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                 channel=target_user_id,
-                text=f"Aprovação solicitada para {escola} ({short_label})",
+                text=f"Sua aprovação: {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
                 blocks=blocks,
             )
 
@@ -143,6 +146,15 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             apprv["dm_channel_id"] = str(dm_channel_id)
             apprv["dm_msg_ts"] = str(msg_ts)
             logger.info(f"Card de aprovação via DM enviado com sucesso para {target_user_id} ({key}) no canal {dm_channel_id}")
+
+            # Alçada que qualquer um de vários aprovadores pode decidir (ex.: diretoria N3)
+            for outro_id in apprv.get("approver_ids") or []:
+                if outro_id != target_user_id:
+                    client.chat_postMessage(unfurl_links=False, unfurl_media=False,
+                        channel=outro_id,
+                        text=f"Sua aprovação: {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
+                        blocks=blocks,
+                    )
 
         except Exception as e:
             logger.error(f"Erro ao enviar DM de aprovação para {target_user_id}: {e}")
@@ -181,7 +193,7 @@ def send_dm_substitute_card(
     orig_name = apprv.get("original_approver_name", "Titular")
     until_date = apprv.get("substitute_until", "")
     sub_reason = apprv.get("substitution_reason", "Ausência temporária")
-    scope_reason = apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial."
+    scope_reason = apprv.get("scope_reason") or ""
 
     target_user_id = None
     is_mock_target = False
@@ -240,13 +252,14 @@ def send_dm_substitute_card(
         })
 
         # Citação com escopo de aprovação
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*📌 O que requer sua aprovação (em substituição a @{orig_name}):*\n> {scope_reason}"
-            }
-        })
+        if scope_reason:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*📌 O que requer sua aprovação (em substituição a @{orig_name}):*\n> {scope_reason}"
+                }
+            })
 
         # Botões de deliberação
         blocks.append({
@@ -259,6 +272,7 @@ def send_dm_substitute_card(
                     "value": f"{ticket_key}:{approval_key}",
                     "text": {"type": "plain_text", "text": f"✅ Aprovar {short_label}", "emoji": True},
                     "style": "primary",
+                    "confirm": confirmar_aprovacao(apprv.get("checklist_label") or short_label, escola),
                 },
                 {
                     "type": "button",
@@ -281,9 +295,9 @@ def send_dm_substitute_card(
             ]
         })
 
-        msg_resp = client.chat_postMessage(
+        msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=target_user_id,
-            text=f"Aprovação solicitada como substituto para {escola} ({short_label})",
+            text=f"Sua aprovação (substituto): {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
             blocks=blocks,
         )
 

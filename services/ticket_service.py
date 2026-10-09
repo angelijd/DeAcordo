@@ -1,4 +1,5 @@
 import os
+import re
 import csv
 import json
 import logging
@@ -10,7 +11,12 @@ from config.triagem_config import USE_MOCK_USERS
 
 logger = logging.getLogger("ticket_service")
 
-TICKETS_FILE = os.path.join(os.path.dirname(__file__), "..", "tickets_state.json")
+# DATA_DIR permite apontar os arquivos de estado para um disco persistente
+# (ex.: um Volume no Railway) em vez da pasta do projeto, que normalmente é
+# apagada a cada novo deploy. Sem DATA_DIR configurado, mantém o comportamento
+# de sempre (arquivo na raiz do projeto).
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(os.path.dirname(__file__), "..")
+TICKETS_FILE = os.path.join(DATA_DIR, "tickets_state.json")
 
 BR_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -104,6 +110,7 @@ def load_tickets() -> Dict[str, Any]:
 def save_tickets(tickets: Dict[str, Any]):
     """Salva os tickets de forma persistente"""
     try:
+        os.makedirs(os.path.dirname(TICKETS_FILE) or ".", exist_ok=True)
         with open(TICKETS_FILE, "w", encoding="utf-8") as f:
             json.dump(tickets, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -161,8 +168,12 @@ def create_ticket(
             "role_title": apprv["role_title"],
             "short_label": apprv["short_label"],
             "approver_id": eff_id,
+            "approver_ids": [] if is_sub else (apprv.get("approver_ids") or []),
             "approver_name": eff_name,
-            "scope_reason": apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial.",
+            "scope_reason": apprv.get("scope_reason") or "",
+            "checklist_label": apprv.get("checklist_label") or "",
+            # parcial=True: reprovar esta alçada (uma exceção) não encerra o pedido
+            "parcial": bool(apprv.get("parcial")),
             "status": "pending",  # pending | approved | rejected
             "approved_by_id": None,
             "approved_by_name": None,
@@ -204,7 +215,17 @@ def create_ticket(
     tickets[ticket_key] = ticket
     save_tickets(tickets)
     logger.info(f"Ticket {ticket_key} criado para '{escola}' com {len(approvals)} alçada(s).")
+    _sync_sheet(ticket_key)
     return ticket
+
+
+def _sync_sheet(ticket_key: str) -> None:
+    """Espelha o ticket na planilha do Google, se configurada. Nunca levanta erro."""
+    try:
+        from services.sheets_service import sincronizar_ticket
+        sincronizar_ticket(ticket_key)
+    except Exception as e:
+        logger.warning(f"Planilha não sincronizada para {ticket_key}: {e}")
 
 
 def get_ticket(ticket_key: str) -> Optional[Dict[str, Any]]:
@@ -217,6 +238,105 @@ def update_ticket_card_ts(ticket_key: str, card_msg_ts: str):
     if ticket_key in tickets:
         tickets[ticket_key]["card_msg_ts"] = card_msg_ts
         save_tickets(tickets)
+
+
+def _concluir_se_todas_decididas(ticket: Dict[str, Any], now_str: str) -> bool:
+    """
+    Conclui o ticket quando todas as alçadas decidiram. Nenhuma reprovação encerra o pedido antes
+    disso: as demais alçadas seguem para o consultor receber todos os ajustes de uma vez.
+    - Alguma alçada obrigatória reprovada -> ticket "rejected" (precisa de ajustes e novo formulário).
+    - Só exceções reprovadas -> "completed" com aprovação parcial.
+    """
+    approvals = list(ticket["approvals"].values())
+    if any(a["status"] == "pending" for a in approvals):
+        return False
+
+    ticket["completed_at"] = now_str
+    obrigatorias_reprovadas = [a for a in approvals if a["status"] == "rejected" and not a.get("parcial")]
+    if obrigatorias_reprovadas:
+        primeira = obrigatorias_reprovadas[0]
+        ticket["status"] = "rejected"
+        ticket["resultado"] = "reprovado"
+        ticket["rejection_reason_key"] = primeira.get("reason_key")
+        ticket["rejection_reason_label"] = primeira.get("reason_label")
+        ticket["rejection_details"] = primeira.get("details")
+        ticket["rejected_by_id"] = primeira.get("rejected_by_id")
+        ticket["rejected_by_name"] = primeira.get("rejected_by_name")
+        ticket["rejected_role"] = primeira.get("role_title", "Alçada")
+    else:
+        ticket["status"] = "completed"
+        ticket["resultado"] = "parcial" if any(a["status"] == "rejected" for a in approvals) else "total"
+    return True
+
+
+def reprovacoes(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Todas as alçadas reprovadas (exceções e obrigatórias), na ordem do pedido."""
+    return [a for a in ticket.get("approvals", {}).values() if a.get("status") == "rejected"]
+
+
+def reacao_conclusao(ticket: Dict[str, Any]) -> str:
+    return "x" if ticket.get("status") == "rejected" else "white_check_mark"
+
+
+def excecoes_reprovadas(ticket: Dict[str, Any]) -> List[str]:
+    return [
+        a.get("short_label") or a.get("role_title", "Exceção")
+        for a in ticket.get("approvals", {}).values()
+        if a.get("parcial") and a.get("status") == "rejected"
+    ]
+
+
+def _linha_reprovacao(a: Dict[str, Any]) -> str:
+    rotulo = a.get("checklist_label") or a.get("short_label") or a.get("role_title", "Alçada")
+    quem = f"<@{a['rejected_by_id']}>" if str(a.get("rejected_by_id") or "").startswith(("U", "W")) else f"@{a.get('rejected_by_name') or 'Aprovador'}"
+    detalhe = f": _{a['details']}_" if a.get("details") else ""
+    return f"• *{rotulo}* ({quem}) · {a.get('reason_label') or 'Reprovado'}{detalhe}"
+
+
+def lista_ajustes_rich_text(ticket: Dict[str, Any], com_quem: bool = True) -> Dict[str, Any]:
+    """Ajustes pedidos como lista numerada nativa do Slack (1., 2., 3.), com menção a quem reprovou."""
+    itens = []
+    for a in reprovacoes(ticket):
+        rotulo = a.get("checklist_label") or a.get("short_label") or a.get("role_title", "Alçada")
+        partes: List[Dict[str, Any]] = [{"type": "text", "text": str(rotulo), "style": {"bold": True}}]
+        if com_quem:
+            rid = str(a.get("rejected_by_id") or "")
+            quem = {"type": "user", "user_id": rid} if rid.startswith(("U", "W")) else {"type": "text", "text": f"@{a.get('rejected_by_name') or 'Aprovador'}"}
+            partes += [{"type": "text", "text": " ("}, quem, {"type": "text", "text": ")"}]
+        partes.append({"type": "text", "text": f" · {a.get('reason_label') or 'Reprovado'}"})
+        if a.get("details"):
+            partes.append({"type": "text", "text": f": {a['details']}"[:2000], "style": {"italic": True}})
+        itens.append({"type": "rich_text_section", "elements": partes})
+    return {"type": "rich_text", "elements": [{"type": "rich_text_list", "style": "ordered", "indent": 0, "elements": itens}]}
+
+
+def blocos_conclusao(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Mensagem de encerramento na thread; na reprovação, os ajustes vêm em lista numerada."""
+    if ticket.get("status") == "rejected" and reprovacoes(ticket):
+        return [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "❌ *SOLICITAÇÃO REPROVADA.* Todos os decisores deliberaram. Ajustes pedidos:"}},
+            lista_ajustes_rich_text(ticket),
+        ]
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": mensagem_conclusao(ticket)[:2900]}}]
+
+
+def mensagem_conclusao(ticket: Dict[str, Any]) -> str:
+    if ticket.get("status") == "rejected":
+        linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
+        return (
+            "❌ *SOLICITAÇÃO REPROVADA.* Todos os decisores deliberaram. Ajustes pedidos:\n"
+            f"{linhas}"
+        )
+    reprovadas = excecoes_reprovadas(ticket)
+    if reprovadas:
+        return (
+            "🟡 *SOLICITAÇÃO CONCLUÍDA COM APROVAÇÃO PARCIAL.* Todos os decisores deliberaram. "
+            f"Fora do contrato (exceções reprovadas): {', '.join(reprovadas)}."
+        )
+    return (
+        "🎉 *SOLICITAÇÃO 100% APROVADA E CONCLUÍDA!* Todos os decisores de alçada deliberaram. "
+        "Ticket formalmente encerrado e liberado para emissão de contrato."
+    )
 
 
 def approve_step(
@@ -237,7 +357,7 @@ def approve_step(
     if not approval:
         return {"success": False, "error": "Alçada de aprovação não encontrada."}
 
-    if approval["status"] == "approved":
+    if approval["status"] in ("approved", "rejected"):
         return {"success": True, "already_approved": True, "ticket": ticket}
 
     agora_br = datetime.now(BR_TZ)
@@ -248,14 +368,11 @@ def approve_step(
     approval["approved_at"] = now_str
     approval["sla_cumprido"] = _sla_cumprido_em(approval, agora_br)
 
-    # Verifica se todas as alçadas foram aprovadas
-    all_completed = all(a["status"] == "approved" for a in ticket["approvals"].values())
-    if all_completed:
-        ticket["status"] = "completed"
-        ticket["completed_at"] = now_str
+    all_completed = _concluir_se_todas_decididas(ticket, now_str)
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
+    _sync_sheet(ticket_key)
 
     return {
         "success": True,
@@ -276,7 +393,7 @@ def reject_step(
     details: str = "",
 ) -> Dict[str, Any]:
     """
-    Registra a reprovação de uma alçada individual e encerra o ticket imediatamente como reprovado.
+    Registra a reprovação de uma alçada. O ticket só fecha quando todas as alçadas decidirem.
     """
     tickets = load_tickets()
     ticket = tickets.get(ticket_key)
@@ -298,21 +415,15 @@ def reject_step(
     approval["reason_label"] = reason_label
     approval["details"] = details
 
-    # Marca todo o ticket como reprovado e encerrado
-    ticket["status"] = "rejected"
-    ticket["completed_at"] = now_str
-    ticket["rejection_reason_key"] = reason_key
-    ticket["rejection_reason_label"] = reason_label
-    ticket["rejection_details"] = details
-    ticket["rejected_by_id"] = user_id
-    ticket["rejected_by_name"] = user_name
-    ticket["rejected_role"] = approval.get("role_title", "Alçada")
-
+    # Nenhuma reprovação encerra o pedido na hora: as demais alçadas seguem decidindo
+    all_completed = _concluir_se_todas_decididas(ticket, now_str)
     tickets[ticket_key] = ticket
     save_tickets(tickets)
-
+    _sync_sheet(ticket_key)
     return {
         "success": True,
+        "parcial": bool(approval.get("parcial")),
+        "all_completed": all_completed,
         "ticket": ticket,
         "approval": approval,
     }
@@ -343,6 +454,7 @@ def substitute_approver(
     original_id = approval.get("approver_id", "")
 
     approval["approver_id"] = new_approver_id
+    approval["approver_ids"] = []
     approval["approver_name"] = new_approver_name
     approval["sla_due_at"] = _compute_sla_due_at(new_approver_name)
     approval["is_substituted"] = True
@@ -355,6 +467,7 @@ def substitute_approver(
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
+    _sync_sheet(ticket_key)
 
     return {
         "success": True,
@@ -362,6 +475,419 @@ def substitute_approver(
         "approval": approval,
         "original_approver_name": original_name,
         "original_approver_id": original_id,
+    }
+
+
+def _mencao_aprovador(apprv: Dict[str, Any]) -> str:
+    """Menção clicável quando há Slack ID real; senão o nome em texto."""
+    approver_id = apprv.get("approver_id") or ""
+    if approver_id.startswith(("U", "W")):
+        return f"<@{approver_id}>"
+    return f"@{apprv.get('approver_name') or 'Aprovador'}"
+
+
+
+# =========================================================================
+# POST NO CANAL (layout escaneável: status no topo + checklist de alçadas)
+# =========================================================================
+
+def modo_botoes_post() -> str:
+    """
+    POST_BOTOES no .env:
+    - "unico" (padrão): um botão "Decidir minhas aprovações" abre uma janela só com as alçadas de quem clicou.
+    - "por_alcada": bloco de aprovações no formato anterior, com Aprovar e Reprovar em cada alçada.
+    """
+    valor = (os.environ.get("POST_BOTOES") or "unico").strip().lower()
+    return "por_alcada" if valor in ("por_alcada", "b") else "unico"
+
+
+def rotulo_checklist(key: str, short_label: str, nomes_excecoes: Dict[str, str], marcas_n3: Dict[str, str]) -> str:
+    """Rótulo curto de cada alçada na checklist do post (ex.: "Exceção 1 (Operações) · Kit Professor")."""
+    partes = key.split("_")
+    if key == "comercial":
+        return "Comercial (Líder)"
+    if key == "aprovador_simulador":
+        return "Simulador"
+    if key.startswith("aprovador_n3_"):
+        marcas = marcas_n3.get(key)
+        return f"N3 {marcas}" if marcas else "N3"
+    if key.startswith("excecao_") and len(partes) >= 3:
+        numero = partes[1]
+        nome = (nomes_excecoes.get(numero) or "")[:70]
+        if partes[2] == "ops":
+            papel = " (Operações)"
+        elif partes[2] == "n3":
+            papel = " (N3)"
+        elif "Diretoria" in (short_label or ""):
+            papel = " (Diretoria)"
+        else:
+            papel = ""
+        return f"Exceção {numero}{papel}" + (f" · {nome}" if nome else "")
+    return short_label or key
+
+
+def _mencao_id(user_id: Optional[str]) -> str:
+    return f"<@{user_id}>" if user_id and str(user_id).startswith(("U", "W")) else ""
+
+
+def _quem_pendente(apprv: Dict[str, Any]) -> str:
+    """Menção do aprovador sem o sufixo de equipe (ex.: "@Rafael Bae (@triagem--contratos psc)" -> "@Rafael Bae")."""
+    return re.sub(r"\s*\(@[^)]*\)", "", _mencao_aprovador(apprv))
+
+
+def _juntar_nomes(nomes: List[str]) -> str:
+    if len(nomes) <= 1:
+        return "".join(nomes)
+    return ", ".join(nomes[:-1]) + " e " + nomes[-1]
+
+
+def _emoji_status_ticket(ticket: Dict[str, Any]) -> str:
+    status = ticket.get("status")
+    if status == "rejected":
+        return "❌"
+    if status == "completed":
+        return "🟡" if excecoes_reprovadas(ticket) else "✅"
+    return "⏳"
+
+
+def _linha_status(ticket: Dict[str, Any]) -> str:
+    approvals = list(ticket.get("approvals", {}).values())
+    status = ticket.get("status")
+
+    if status == "rejected":
+        linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
+        return f"*Reprovada* · ajustes pedidos:\n{linhas}"
+
+    if status == "completed":
+        reprovadas = excecoes_reprovadas(ticket)
+        if reprovadas:
+            return f"*Concluída com aprovação parcial* · fora do contrato: {', '.join(reprovadas)}"
+        return "*Concluída* · liberada para emissão de contrato"
+
+    aprovadas = sum(1 for a in approvals if a.get("status") == "approved")
+    pendentes = [a for a in approvals if a.get("status") == "pending"]
+    faltam = list(dict.fromkeys(_quem_pendente(a) for a in pendentes))
+    linha = f"*{aprovadas} de {len(approvals)} aprovadas*"
+    if faltam:
+        linha += f" · falta{'m' if len(faltam) > 1 else ''} {_juntar_nomes(faltam)}"
+    reprovadas = [(a.get("checklist_label") or a.get("short_label") or "Alçada").split(" · ")[0] for a in reprovacoes(ticket)]
+    if reprovadas:
+        linha += f" · reprovad{'as' if len(reprovadas) > 1 else 'a'}: {', '.join(reprovadas)}"
+    return linha
+
+
+def _linha_alcada(apprv: Dict[str, Any], ticket_reprovado: bool) -> str:
+    rotulo = apprv.get("checklist_label") or apprv.get("short_label") or apprv.get("role_title") or "Alçada"
+    status = apprv.get("status")
+    if status == "approved":
+        quem = _mencao_id(apprv.get("approved_by_id")) or f"@{apprv.get('approved_by_name') or apprv.get('approver_name')}"
+        quando = f" · _{apprv['approved_at']}_" if apprv.get("approved_at") else ""
+        return f"✅ {rotulo} · {quem}{quando}"
+    if status == "rejected":
+        quem = _mencao_id(apprv.get("rejected_by_id")) or f"@{apprv.get('rejected_by_name') or apprv.get('approver_name')}"
+        motivo = f" · _{apprv['reason_label']}_" if apprv.get("reason_label") else ""
+        return f"❌ {rotulo} · {quem}{motivo}"
+    sub = ""
+    if apprv.get("is_substituted"):
+        sub = f" _(no lugar de {apprv.get('original_approver_name')} até {apprv.get('substitute_until')})_"
+    return f"{'⏹️' if ticket_reprovado else '⏳'} {rotulo} · {_quem_pendente(apprv)}{sub}"
+
+
+def _secoes_de_linhas(linhas: List[str]) -> List[Dict[str, Any]]:
+    """Agrupa linhas em seções de até ~2900 caracteres (limite do Slack é 3000)."""
+    blocos, atual = [], ""
+    for linha in linhas:
+        if atual and len(atual) + len(linha) + 1 > 2900:
+            blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": atual}})
+            atual = ""
+        atual = f"{atual}\n{linha}" if atual else linha
+    if atual:
+        blocos.append({"type": "section", "text": {"type": "mrkdwn", "text": atual}})
+    return blocos
+
+
+def _menu_triagem(ticket_key: str) -> Dict[str, Any]:
+    return {
+        "type": "overflow",
+        "action_id": "triagem_menu",
+        "options": [
+            {"text": {"type": "plain_text", "text": "🔄 Substituir aprovador (triagem)", "emoji": True}, "value": f"sub:{ticket_key}"},
+            {"text": {"type": "plain_text", "text": "🔔 Cobrar pendências (triagem)", "emoji": True}, "value": f"cob:{ticket_key}"},
+        ],
+    }
+
+
+
+def _card_na_thread(ticket: Dict[str, Any]) -> bool:
+    """True quando o card de aprovação é uma resposta na thread (não a mensagem principal do canal)."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    card = ticket.get("card_msg_ts")
+    return bool(pv.get("fluxo")) and (ticket.get("card_na_thread") or bool(card and card != ticket.get("thread_ts")))
+
+
+def _cnpj_formatado(cnpj: Any) -> str:
+    cnpj = str(cnpj or "-")
+    digitos = re.sub(r"\D", "", cnpj)
+    if len(digitos) == 14:
+        return f"{digitos[:2]}.{digitos[2:5]}.{digitos[5:8]}/{digitos[8:12]}-{digitos[12:]}"
+    return cnpj
+
+
+def status_canal(ticket: Dict[str, Any]) -> str:
+    """Status da notificação no canal: 1 ou mais reprovações = Reprovado, mesmo com aprovações."""
+    if reprovacoes(ticket):
+        return "❌ Reprovado"
+    if ticket.get("status") == "completed":
+        return "✅ Aprovado"
+    return "⏳ Pendente"
+
+
+def build_channel_notice_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Notificação de nova negociação no canal: tipo, escola, CNPJ e status. Nada de botões."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    fluxo = pv.get("fluxo") or "Solicitação"
+    emoji_fluxo = "🔄" if fluxo == "Renovação" else "🌱"
+    escola = pv.get("escola") or ticket.get("escola") or "Escola"
+    cnpj = _cnpj_formatado(pv.get("cnpj") or ticket.get("cnpj") or (ticket.get("extra_data") or {}).get("cnpj"))
+    return [{
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"{emoji_fluxo} *{fluxo} · {escola}*\nCNPJ {cnpj}  ·  *{status_canal(ticket)}*"[:2900],
+        },
+    }]
+
+
+def texto_aviso_canal(ticket: Dict[str, Any]) -> str:
+    """Texto da notificação (push/prévia) do aviso no canal: "🔄 Renovação · ESCOLA · Pendente"."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    fluxo = pv.get("fluxo") or "Solicitação"
+    emoji_fluxo = "🔄" if fluxo == "Renovação" else "🌱"
+    escola = pv.get("escola") or ticket.get("escola") or "Escola"
+    return f"{emoji_fluxo} {fluxo} · {escola} · {status_canal(ticket).split(' ', 1)[-1]}"
+
+
+def texto_card_thread(ticket: Dict[str, Any]) -> str:
+    """Texto da notificação do card na thread: o que ainda falta aprovar."""
+    escola = ticket.get("escola") or "Escola"
+    pendentes = [
+        a.get("checklist_label") or a.get("short_label") or "Aprovação"
+        for a in ticket.get("approvals", {}).values() if a.get("status") == "pending"
+    ]
+    if ticket.get("status") == "pending" and pendentes:
+        return f"Aprovação pendente: {', '.join(pendentes)} · {escola}"[:300]
+    return f"{status_canal(ticket).split(' ', 1)[-1]} · {escola}"
+
+
+def texto_post_principal(ticket: Dict[str, Any]) -> str:
+    return texto_aviso_canal(ticket) if _card_na_thread(ticket) else texto_card_thread(ticket)
+
+
+def metadata_ticket(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    """Metadados invisíveis na mensagem (ticket, tipo e status) para integrações e buscas futuras."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    return {
+        "event_type": "deacordo_ticket",
+        "event_payload": {
+            "ticket_key": str(ticket.get("key") or ""),
+            "tipo": str(pv.get("fluxo") or ""),
+            "status": str(ticket.get("status") or "pending"),
+        },
+    }
+
+
+def _contexto_excecao(ticket: Dict[str, Any], key: str, vistos: set) -> str:
+    """Contexto da exceção logo abaixo da sua linha (só na 1ª alçada da exceção), antes dos botões."""
+    m = re.match(r"excecao_(\d+)_", key or "")
+    if not m or m.group(1) in vistos:
+        return ""
+    vistos.add(m.group(1))
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    ctx = str((pv.get("contextos_excecoes") or {}).get(m.group(1)) or "").strip()
+    if not ctx:
+        return ""
+    if len(ctx) > 1500:
+        ctx = ctx[:1500] + "…"
+    return "\n> 📝 " + ctx.replace("\n", "\n> ")
+
+
+def _rodape_blocos(na_thread: bool) -> List[Dict[str, Any]]:
+    texto = _rodape_card(na_thread)
+    return [{"type": "context", "elements": [{"type": "mrkdwn", "text": texto}]}] if texto else []
+
+
+def _rodape_card(na_thread: bool) -> str:
+    return "" if na_thread else "Contexto, CNPJ e INEP estão na thread."
+
+
+def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Post da solicitação no canal: título com status, resumo numa linha e checklist de alçadas."""
+    pv = ticket["extra_data"]["post_view"]
+    status = ticket.get("status")
+    reprovado = status == "rejected"
+    pendente = status not in ("completed", "rejected")
+    approvals = ticket.get("approvals", {})
+
+    na_thread = _card_na_thread(ticket)
+    blocks: List[Dict[str, Any]] = []
+    if not na_thread:
+        blocks.append({
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{_emoji_status_ticket(ticket)} {pv['fluxo']} · {pv['escola']}"[:150], "emoji": True},
+        })
+    if pv.get("itens"):
+        # Um item por linha (valor, reajuste, marca, alunado, consultor e líder, SalesForce) + botão do Simulador
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(pv["itens"])[:2900]}})
+        if pv.get("simulador_url"):
+            blocks.append({
+                "type": "actions",
+                "block_id": "simulador_link",
+                "elements": [{
+                    "type": "button",
+                    "action_id": "btn_abrir_simulador",
+                    "text": {"type": "plain_text", "text": "📎 Simulador", "emoji": True},
+                    "url": pv["simulador_url"],
+                }],
+            })
+        if pv.get("contexto_geral") is not None:
+            # Abaixo do simulador: escola, CNPJ e contexto (antes ficavam numa 3ª mensagem da thread)
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"🏫 *{pv.get('escola')}*  ·  CNPJ {_cnpj_formatado(pv.get('cnpj'))}"[:2900]}})
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"📝 *Contexto da negociação*\n{pv.get('contexto_geral') or 'Não informado.'}"[:2900]}})
+    elif pv.get("resumo") or pv.get("simulador_url"):
+        resumo = {"type": "section", "text": {"type": "mrkdwn", "text": (pv.get("resumo") or " ")[:2900]}}
+        if pv.get("simulador_url"):
+            resumo["accessory"] = {
+                "type": "button",
+                "action_id": "btn_abrir_simulador",
+                "text": {"type": "plain_text", "text": "📎 Simulador", "emoji": True},
+                "url": pv["simulador_url"],
+            }
+        blocks.append(resumo)
+    if pv.get("pessoas") and not pv.get("itens"):
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": pv["pessoas"][:2900]}]})
+    alertas = list(pv.get("extras") or [])
+    if alertas:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(alertas)[:2900]}]})
+
+    if modo_botoes_post() == "por_alcada":
+        # Opção B: bloco de aprovações no formato anterior (seção + botões por alçada, botões da triagem)
+        blocks.extend(build_approval_blocks(ticket))
+        blocks.extend(_secoes_de_linhas(list(pv.get("excecoes_sem_alcada") or [])))
+        blocks.extend(_rodape_blocos(na_thread))
+        return blocks
+
+    blocks.append({"type": "divider"})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "*Aprovações*"}]})
+
+    por_alcada = False
+    linhas_soltas: List[str] = []
+    vistos_ctx: set = set()
+    for key, apprv in approvals.items():
+        linha = _linha_alcada(apprv, reprovado) + _contexto_excecao(ticket, key, vistos_ctx)
+        if por_alcada and apprv.get("status") == "pending":
+            blocks.extend(_secoes_de_linhas(linhas_soltas))
+            linhas_soltas = []
+            blocks.append({"type": "section", "block_id": f"approval_section_{key}", "text": {"type": "mrkdwn", "text": linha[:2900]}})
+            blocks.append({
+                "type": "actions",
+                "block_id": f"approval_actions_{key}",
+                "elements": [
+                    {"type": "button", "action_id": f"btn_aprovar_{key}", "value": f"{ticket['key']}:{key}",
+                     "text": {"type": "plain_text", "text": "✅ Aprovar", "emoji": True}, "style": "primary",
+                     "confirm": confirmar_aprovacao(apprv.get("checklist_label") or apprv.get("short_label") or "Aprovação", ticket.get("escola", "Escola"))},
+                    {"type": "button", "action_id": f"btn_reprovar_{key}", "value": f"{ticket['key']}:{key}",
+                     "text": {"type": "plain_text", "text": "❌ Reprovar", "emoji": True}, "style": "danger"},
+                ],
+            })
+        else:
+            linhas_soltas.append(linha)
+    linhas_soltas.extend(pv.get("excecoes_sem_alcada") or [])
+    blocks.extend(_secoes_de_linhas(linhas_soltas))
+
+    if pendente:
+        elementos: List[Dict[str, Any]] = []
+        if not por_alcada:
+            elementos.append({
+                "type": "button",
+                "action_id": "btn_decidir_minhas",
+                "value": ticket["key"],
+                "text": {"type": "plain_text", "text": "Decidir minhas aprovações", "emoji": True},
+                "style": "primary",
+            })
+        elementos.append(_menu_triagem(ticket["key"]))
+        blocks.append({"type": "actions", "block_id": "post_actions", "elements": elementos})
+
+    blocks.extend(_rodape_blocos(na_thread))
+    return blocks
+
+
+def alcadas_do_usuario(ticket: Dict[str, Any], user_id: str, autorizado) -> List[Dict[str, Any]]:
+    """Alçadas pendentes que `user_id` pode decidir (autorizado = check_approval_authorization)."""
+    if ticket.get("status") in ("completed", "rejected"):
+        return []
+    minhas = []
+    for apprv in ticket.get("approvals", {}).values():
+        if apprv.get("status") != "pending":
+            continue
+        ok, _ = autorizado(apprv, user_id)
+        if ok:
+            minhas.append(apprv)
+    return minhas
+
+
+def confirmar_aprovacao(rotulo: str, escola: str) -> Dict[str, Any]:
+    """Janela "tem certeza?" do Slack antes de registrar uma aprovação."""
+    return {
+        "title": {"type": "plain_text", "text": "Confirmar aprovação"},
+        "text": {"type": "mrkdwn", "text": f"Aprovar *{rotulo}* da *{escola}*?"[:300]},
+        "confirm": {"type": "plain_text", "text": "Sim, aprovar"},
+        "deny": {"type": "plain_text", "text": "Cancelar"},
+    }
+
+
+def build_decidir_modal(ticket: Dict[str, Any], user_id: str, autorizado) -> Dict[str, Any]:
+    """Janela com as alçadas pendentes de quem clicou em "Decidir minhas aprovações"."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    minhas = alcadas_do_usuario(ticket, user_id, autorizado)
+    decididas_agora = [
+        a for a in ticket.get("approvals", {}).values()
+        if a.get("status") in ("approved", "rejected") and user_id in (a.get("approved_by_id"), a.get("rejected_by_id"))
+    ]
+
+    blocks: List[Dict[str, Any]] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{ticket.get('escola', 'Escola')}*\n{pv.get('resumo', '')}"[:2900]}},
+    ]
+    if ticket.get("thread_permalink"):
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔗 <{ticket['thread_permalink']}|Abrir a thread com o contexto>"}]})
+    blocks.append({"type": "divider"})
+
+    for apprv in minhas:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (f"*{apprv.get('checklist_label') or apprv.get('short_label')}*" + (f"\n{apprv['scope_reason']}" if apprv.get("scope_reason") else ""))[:2900]},
+        })
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {"type": "button", "action_id": "decidir_aprovar", "value": f"{ticket['key']}:{apprv['key']}",
+                 "text": {"type": "plain_text", "text": "✅ Aprovar", "emoji": True}, "style": "primary",
+                 "confirm": confirmar_aprovacao(apprv.get("checklist_label") or apprv.get("short_label") or "Aprovação", ticket.get("escola", "Escola"))},
+                {"type": "button", "action_id": "decidir_reprovar", "value": f"{ticket['key']}:{apprv['key']}",
+                 "text": {"type": "plain_text", "text": "❌ Reprovar", "emoji": True}, "style": "danger"},
+            ],
+        })
+    if decididas_agora:
+        blocks.extend(_secoes_de_linhas([_linha_alcada(a, False) for a in decididas_agora]))
+    if not minhas:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "Você não tem mais aprovações pendentes nesta solicitação. 🙌"}})
+
+    return {
+        "type": "modal",
+        "callback_id": "modal_decidir_minhas",
+        "private_metadata": ticket["key"],
+        "title": {"type": "plain_text", "text": "Minhas aprovações"},
+        "close": {"type": "plain_text", "text": "Fechar"},
+        "blocks": blocks[:100],
     }
 
 
@@ -410,26 +936,22 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # Se o ticket foi reprovado, estampa o banner de encerramento no topo
     if is_rejected:
-        reprovador = ticket.get("rejected_by_name") or "Aprovador"
-        motivo = ticket.get("rejection_reason_label") or "Solicitação Reprovada"
-        detalhes = ticket.get("rejection_details") or "Sem detalhes adicionais."
         reprov_at = ticket.get("completed_at") or datetime.now().strftime("%d/%m às %Hh%M")
+        linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
                     f"🚨 *SOLICITAÇÃO REPROVADA ({reprov_at})*\n"
-                    f"• *Reprovado por:* @{reprovador} ({ticket.get('rejected_role', 'Alçada')})\n"
-                    f"• *Motivo:* *{motivo}*\n"
-                    f"• *Justificativa:* _{detalhes}_\n\n"
-                    f"⚠️ *Status:* *Ticket encerrado.* Para dar andamento na negociação, "
-                    f"o consultor deve realizar as adequações necessárias e submeter um novo formulário."
-                )
+                    f"*Ajustes pedidos:*\n{linhas}\n\n"
+                    f"⚠️ *Status:* *Ticket encerrado.*"
+                )[:2900]
             }
         })
         blocks.append({"type": "divider"})
 
+    vistos_ctx: set = set()
     for key, apprv in approvals.items():
         role_title = apprv["role_title"]
         approver_name = apprv["approver_name"]
@@ -441,6 +963,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
             sub_until = apprv.get("substitute_until", "")
             orig_name = apprv.get("original_approver_name", "")
             substitute_badge = f"\n_🔄 Substituto temporário até {sub_until} (Titular ausente: @{orig_name})_"
+        substitute_badge += _contexto_excecao(ticket, key, vistos_ctx)
 
         if status == "pending":
             if is_rejected:
@@ -450,7 +973,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "block_id": f"approval_section_{key}",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{role_title}:* @{approver_name}{substitute_badge}\n*Status:* ⏹️ *Encerrado (Ticket Reprovado)*"
+                        "text": f"*{role_title}:* {_mencao_aprovador(apprv)}{substitute_badge}\n*Status:* ⏹️ *Encerrado (Ticket Reprovado)*"
                     }
                 })
             else:
@@ -460,7 +983,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "block_id": f"approval_section_{key}",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{role_title}:* @{approver_name}{substitute_badge}\n*Status:* ⏳ *Aguardando deliberação*"
+                        "text": f"*{role_title}:* {_mencao_aprovador(apprv)}{substitute_badge}\n*Status:* ⏳ *Aguardando deliberação*"
                     }
                 })
                 blocks.append({
@@ -472,7 +995,8 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                             "action_id": f"btn_aprovar_{key}",
                             "value": f"{ticket['key']}:{key}",
                             "text": {"type": "plain_text", "text": f"✅ Aprovar {apprv['short_label']}", "emoji": True},
-                            "style": "primary"
+                            "style": "primary",
+                            "confirm": confirmar_aprovacao(apprv.get("checklist_label") or apprv["short_label"], ticket.get("escola", "Escola")),
                         },
                         {
                             "type": "button",
@@ -512,22 +1036,10 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     if all_approved:
         blocks.append({
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "🎉 *TODAS AS ALÇADAS FORAM APROVADAS! Solicitação encerrada e liberada para emissão de contrato.*"
-            }
+            "text": {"type": "mrkdwn", "text": mensagem_conclusao(ticket)}
         })
     elif not is_rejected:
         # Ações administrativas e de segurança apenas se o ticket ainda estiver pendente
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "🔒 *Validação de Identidade:* Apenas os aprovadores indicados podem aprovar/reprovar suas respectivas alçadas."
-                }
-            ]
-        })
         blocks.append({
             "type": "actions",
             "block_id": "triagem_actions_block",
@@ -557,6 +1069,40 @@ def build_thread_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     unindo todos os dados do workflow no formato idêntico ao original e os botões interativos de deliberação.
     """
     blocks = []
+    post_view = (ticket.get("extra_data") or {}).get("post_view")
+    if post_view and post_view.get("fluxo"):
+        return build_post_blocks(ticket)
+    if post_view:
+        blocks.append({
+            "type": "header",
+            "text": {"type": "plain_text", "text": post_view["titulo"][:150], "emoji": True},
+        })
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": post_view["subtitulo"]}],
+        })
+        campos = post_view.get("campos") or []
+        for i in range(0, len(campos), 10):
+            blocks.append({
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*{label}*\n{valor or '-'}"[:2000]}
+                    for label, valor in campos[i:i + 10]
+                ],
+            })
+        if post_view.get("links"):
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": post_view["links"]}],
+            })
+        if post_view.get("excecoes"):
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Exceções* (contexto na thread)\n" + "\n".join(post_view["excecoes"])},
+            })
+        blocks.extend(build_approval_blocks(ticket))
+        return blocks
+
     text = ticket.get("details_text") or ticket.get("main_text_base") or ""
     if text:
         # Divide com segurança se exceder o limite de 3000 caracteres do Slack por seção
@@ -585,8 +1131,11 @@ def build_thread_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def build_main_post_blocks(ticket: Dict[str, Any], permalink: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    Retorna a mesma estrutura unificada para que tudo viva em 1 mensagem só.
+    Mensagem principal no canal. Tickets novos (card de aprovação dentro da thread): só a notificação
+    com tipo, escola, CNPJ e status. Tickets antigos (card na própria mensagem principal): tudo junto.
     """
+    if _card_na_thread(ticket):
+        return build_channel_notice_blocks(ticket)
     return build_thread_blocks(ticket)
 
 
@@ -617,10 +1166,8 @@ def executar_cobranca_pendencias(client) -> int:
     for t in pending_tickets:
         escola = t.get("escola", "Escola")
 
-        aprovados = [
-            a["short_label"] for a in t.get("approvals", {}).values() if a["status"] != "pending"
-        ]
-        aprovados_str = ", ".join(aprovados) if aprovados else "nenhuma alçada ainda"
+        permalink = t.get("thread_permalink")
+        link = f"\n🔗 <{permalink}|Abrir a thread da solicitação>" if permalink else ""
 
         for p in t.get("approvals", {}).values():
             if p["status"] != "pending":
@@ -630,35 +1177,25 @@ def executar_cobranca_pendencias(client) -> int:
 
             approver_id = p.get("approver_id")
             approver_name = p.get("approver_name")
-            has_real_id = bool(approver_id and approver_id.startswith(("U", "W")))
+            if not (approver_id and approver_id.startswith(("U", "W"))):
+                # Cobrança é só por DM: sem ID de Slack não há para quem mandar.
+                logger.warning(f"Cobrança de SLA para {approver_name}: sem ID de Slack válido, lembrete não enviado.")
+                continue
 
-            if aprovados:
-                msg = f"🔔 *Lembrete (SLA vencido):* o {aprovados_str} já aprovaram. Falta apenas o seu clique de *{p['short_label']}* para liberar o contrato da *{escola}*!"
-            else:
-                msg = f"🔔 *Lembrete (SLA vencido):* a solicitação da *{escola}* aguarda sua aprovação de *{p['short_label']}* e o prazo já venceu."
-
-            if has_real_id:
-                try:
-                    client.chat_postMessage(
-                        channel=approver_id,
-                        text=msg
-                    )
-                    total_cobrados += 1
-                except Exception as e:
-                    logger.error(f"Erro ao enviar cobrança por DM para {approver_name}: {e}")
-            else:
-                # Sem ID real de Slack pra mandar DM: ao menos avisa na thread pública,
-                # mencionando por nome, pra não desaparecer sem rastro.
-                logger.warning(f"Cobrança de SLA para {approver_name}: sem ID de Slack válido para DM, caindo para a thread.")
-                try:
-                    client.chat_postMessage(
-                        channel=t["channel_id"],
-                        thread_ts=t["thread_ts"],
-                        text=f"@{approver_name} {msg}"
-                    )
-                    total_cobrados += 1
-                except Exception as e:
-                    logger.error(f"Erro ao enviar cobrança na thread para {approver_name}: {e}")
+            msg = (
+                f"🔔 *Lembrete (SLA vencido):* Falta a sua análise na *{p['short_label']}* "
+                f"para liberar o contrato da *{escola}*!{link}"
+            )
+            try:
+                client.chat_postMessage(
+                    channel=approver_id,
+                    text=f"⏰ SLA vencido: {p.get('checklist_label') or p['short_label']} · {escola}",
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": msg[:2900]}}],
+                    unfurl_links=False, unfurl_media=False,
+                )
+                total_cobrados += 1
+            except Exception as e:
+                logger.error(f"Erro ao enviar cobrança por DM para {approver_name}: {e}")
 
     logger.info(f"Cobrança inteligente concluída: {total_cobrados} lembrete(s) enviado(s).")
     return total_cobrados
@@ -667,7 +1204,7 @@ def executar_cobranca_pendencias(client) -> int:
 def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str) -> Dict[str, Any]:
     """
     Dispara cobrança pontual focada nas alçadas pendentes deste ticket específico,
-    postando alerta com menções na thread e disparando lembrete nas DMs dos aprovadores.
+    enviando lembrete só na DM de cada aprovador (a thread não recebe cobrança).
     """
     tickets = load_tickets()
     ticket = tickets.get(ticket_key)
@@ -681,37 +1218,7 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
     if not pendentes:
         return {"success": False, "message": "ℹ️ Não há alçadas pendentes para este ticket."}
 
-    channel_id = ticket["channel_id"]
-    thread_ts = ticket["thread_ts"]
     escola = ticket.get("escola", "Escola")
-
-    mentions = []
-    labels = []
-    for p in pendentes:
-        approver_id = p.get("approver_id")
-        approver_name = p.get("approver_name", "Aprovador")
-        if approver_id and approver_id.startswith(("U", "W")):
-            mentions.append(f"<@{approver_id}>")
-        else:
-            mentions.append(f"@{approver_name}")
-        labels.append(p.get("short_label", p.get("role_title", "Alçada")))
-
-    mentions_str = ", ".join(mentions)
-    labels_str = ", ".join(labels)
-
-    thread_msg = (
-        f"🔔 *Cobrança Operacional de Pendências (@triagem por <@{requested_by_user}>)*\n"
-        f"Atenção {mentions_str}: a solicitação da escola *{escola}* ainda aguarda sua deliberação de *{labels_str}* para liberação de contrato."
-    )
-
-    try:
-        client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text=thread_msg
-        )
-    except Exception as e:
-        logger.error(f"Erro ao postar cobrança na thread: {e}")
 
     # Envia lembrete amigável nas DMs dos aprovadores pendentes
     from services.dm_approval_service import USE_MOCK_USERS
@@ -726,9 +1233,9 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
         if target_id:
             try:
                 test_badge = f"🧪 *[MODO DE TESTE]* Cobrança para: *@{p.get('approver_name')}*\n" if is_mock else ""
-                client.chat_postMessage(
+                client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                     channel=target_id,
-                    text=f"🔔 Lembrete de Pendência: {escola} ({p.get('short_label')})",
+                    text=f"🔔 Pendência: {p.get('checklist_label') or p.get('short_label')} · {escola}",
                     blocks=[
                         {
                             "type": "section",
@@ -737,8 +1244,8 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
                                 "text": (
                                     f"🔔 *Lembrete de Pendência de Aprovação*\n{test_badge}"
                                     f"• *Escola:* {escola}\n"
-                                    f"• *Sua Alçada:* {p.get('role_title')}\n\n"
-                                    f"A equipe de *@triagem* solicitou prioridade na deliberação deste ticket. "
+                                    f"• *Sua Alçada:* {p.get('short_label') or p.get('role_title')}\n\n"
+                                    f"A equipe de *@triagem* solicitou a deliberação deste contrato. "
                                     f"Por favor, verifique seu card de aprovação para dar seu parecer."
                                 )
                             }
@@ -748,7 +1255,7 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
                             "elements": [
                                 {
                                     "type": "mrkdwn",
-                                    "text": f"🔗 <{ticket.get('thread_permalink') or '#'}|Acessar thread do canal de negociação>"
+                                    "text": f"🔗 <{ticket.get('thread_permalink') or '#'}|Abrir a thread da solicitação>"
                                 }
                             ]
                         }
@@ -758,10 +1265,12 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
             except Exception as e:
                 logger.warning(f"Erro ao enviar DM de cobrança: {e}")
 
+    sem_dm = len(pendentes) - total_dms
+    aviso = f" ⚠️ {sem_dm} sem ID de Slack, não cobrada(s)." if sem_dm else ""
     return {
         "success": True,
         "total_pendentes": len(pendentes),
-        "message": f"✅ Cobrança disparada com sucesso na thread e via DM para {len(pendentes)} alçada(s) pendente(s)!"
+        "message": f"✅ Lembrete enviado por DM para {total_dms} alçada(s) pendente(s).{aviso}"
     }
 
 
@@ -878,10 +1387,20 @@ def _excecao_status(excecao: Dict[str, Any], approvals: Dict[str, Any]) -> str:
     Uma exceção pode exigir Comercial, Operações, ambas ou nenhuma (regra "-").
     """
     relevantes = []
+    numero = excecao.get("numero")
+    # Tickets novos têm uma alçada por exceção (excecao_N_com / excecao_N_ops);
+    # os antigos usavam "comercial" e "operacoes" compartilhadas.
     if excecao.get("aprovador_comercial") and excecao["aprovador_comercial"] != "-":
-        relevantes.append(approvals.get("comercial", {}).get("status", "pending"))
+        # excecao_N_com, ou excecao_N_n3_1, _n3_2... quando a regra aponta o N3 de cada marca
+        da_excecao = [
+            a for k, a in approvals.items()
+            if k == f"excecao_{numero}_com" or k.startswith(f"excecao_{numero}_n3_")
+        ]
+        for apprv in da_excecao or [approvals.get("comercial", {})]:
+            relevantes.append(apprv.get("status", "pending"))
     if excecao.get("aprovador_operacoes") and excecao["aprovador_operacoes"] != "-":
-        relevantes.append(approvals.get("operacoes", {}).get("status", "pending"))
+        apprv = approvals.get(f"excecao_{numero}_ops") or approvals.get("operacoes", {})
+        relevantes.append(apprv.get("status", "pending"))
 
     if not relevantes:
         return "sem_aprovacao_necessaria"

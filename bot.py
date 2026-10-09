@@ -5,16 +5,21 @@ import logging
 from datetime import datetime
 from typing import Optional
 from dotenv import load_dotenv
+
+# Precisa vir antes dos imports de config/ e services/, que leem o .env ao serem importados
+load_dotenv()
+
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config.approvers_map import format_user_mention
+from config.approvers_map import APPROVERS_CONFIG, format_user_mention
 from config.exceptions_rules import EXCEPTIONS_RULES
 from config.triagem_config import is_user_triagem
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
+from config.n3_config import DIRETORES_N3, MODO_ALTA_DEMANDA, N3_GENERICO, N3_MARCAR_APROVADORES, resolver_aprovadores_n3
 from services.receita_service import consultar_cnpj
 from services.inep_service import buscar_inep
 from services.ticket_service import (
@@ -29,6 +34,17 @@ from services.ticket_service import (
     executar_cobranca_pendencias,
     cobrar_pendencias_de_ticket,
     get_pending_tickets,
+    mensagem_conclusao,
+    rotulo_checklist,
+    build_decidir_modal,
+    alcadas_do_usuario,
+    reacao_conclusao,
+    build_channel_notice_blocks,
+    texto_aviso_canal,
+    texto_card_thread,
+    texto_post_principal,
+    metadata_ticket,
+    blocos_conclusao,
 )
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
@@ -46,9 +62,6 @@ from utils.currency_words import format_real_input, parse_currency_str, valor_pa
 # Configura logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("slack_bot")
-
-# Carrega variáveis de ambiente
-load_dotenv()
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
@@ -107,6 +120,11 @@ def safe_views_update(client, view_id: str, modal: dict):
         raise e
 
 
+def _status_pt(status: Optional[str]) -> str:
+    """Status do ticket em português para mensagens aos usuários."""
+    return {"completed": "concluído", "rejected": "reprovado", "pending": "pendente"}.get(status or "", status or "-")
+
+
 def check_approval_authorization(apprv: dict, user_id: str) -> tuple[bool, bool]:
     """
     Verifica se `user_id` pode aprovar/reprovar a alçada `apprv`.
@@ -117,6 +135,9 @@ def check_approval_authorization(apprv: dict, user_id: str) -> tuple[bool, bool]
     """
     expected_approver_id = apprv.get("approver_id") or ""
     allow_self = os.environ.get("TEST_ALLOW_SELF_APPROVAL", "false").lower() == "true"
+
+    if user_id in (apprv.get("approver_ids") or []):
+        return (True, False)
 
     if expected_approver_id and expected_approver_id.startswith(("U", "W")):
         return (user_id == expected_approver_id or allow_self, False)
@@ -247,7 +268,7 @@ def handle_post_button_command(ack, body, client):
         },
     ]
 
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False,
         channel=channel_id,
         text="Central de Aprovações Comerciais - Ciclo CE 2027",
         blocks=blocks,
@@ -366,6 +387,8 @@ def handle_cnpj_input(ack, body, client):
             inep_res = buscar_inep(info.get("nome_fantasia", ""), info.get("razao_social", ""))
             if inep_res and inep_res.get("codigo_inep"):
                 saved_values["inep"] = inep_res["codigo_inep"]
+        else:
+            cnpj_info = {"cnpj": digitos, **info}
 
     updated_modal = build_aprovacoes_modal(
         current_user_id=current_user_id,
@@ -408,6 +431,8 @@ def handle_buscar_cnpj_button(ack, body, client):
             inep_res = buscar_inep(cnpj_info.get("nome_fantasia", ""), cnpj_info.get("razao_social", ""))
             if inep_res and inep_res.get("codigo_inep"):
                 saved_values["inep"] = inep_res["codigo_inep"]
+        else:
+            cnpj_info = {"cnpj": digitos, **cnpj_info}
 
     updated_modal = build_aprovacoes_modal(
         current_user_id=current_user_id,
@@ -643,6 +668,8 @@ def handle_submission(ack, body, client):
 
     if not data.get("link_sf"):
         errors["link_sf_block"] = "Informe o Link da Oportunidade no SalesForce."
+    elif not re.search(r"(salesforce\.com|force\.com)", str(data.get("link_sf")), re.IGNORECASE):
+        errors["link_sf_block"] = "Cole o link da oportunidade no SalesForce (o endereço deve ser do salesforce.com ou force.com)."
 
     if not data.get("contexto_geral"):
         errors["contexto_geral_block"] = "Preencha o Contexto Geral da Escola/Negociação."
@@ -656,8 +683,6 @@ def handle_submission(ack, body, client):
             errors["reajuste_liquido_block"] = "Informe o % de Reajuste Líquido."
         if not data.get("aprovador_simulador"):
             errors["aprovador_simulador_block"] = "Selecione o Aprovador indicado no simulador."
-        if not data.get("aprovador_n3"):
-            errors["aprovador_n3_block"] = "Selecione o Aprovador de Exceção (Comercial) N3."
     else:
         # Validação de inviabilidade para cada marca selecionada (Crescimento)
         for m in data.get("marcas", []):
@@ -707,6 +732,11 @@ def handle_submission(ack, body, client):
             lider_tag = format_mention(lider_id)
             com_tag = f"{lider_tag} (Líder Direto)"
             aprovadores_para_marcar.add(lider_tag)
+        elif aprov_com == N3_GENERICO:
+            com_tag = " ou ".join(
+                f"<@{d['slack_id']}>" if (N3_MARCAR_APROVADORES and d["slack_id"]) else f"@{d['nome']}"
+                for d in DIRETORES_N3
+            )
         elif aprov_com:
             com_tag = format_user_mention(aprov_com)
             aprovadores_para_marcar.add(com_tag)
@@ -726,6 +756,8 @@ def handle_submission(ack, body, client):
             "aprov_com_tag": com_tag,
             "regra_ops": rule.get("ops", "-"),
             "aprov_ops_tag": ops_tag,
+            "aprov_com_nome": aprov_com,
+            "aprov_ops_nome": aprov_ops,
         })
 
     # Versão estruturada das exceções, para salvar no ticket (fora do texto livre)
@@ -853,11 +885,22 @@ def handle_submission(ack, body, client):
 
     aprovador_simulador_tag = ""
     aprovador_n3_tag = ""
+    aprovadores_n3 = []
     if tipo_fluxo == FLUXO_RENOVACAO:
         reajuste_val = str(data.get("reajuste_liquido") or "").strip()
         reajuste_display = f"{reajuste_val}%" if reajuste_val else "n/a"
         aprovador_simulador_tag = format_mention(data.get("aprovador_simulador"))
-        aprovador_n3_tag = format_mention(data.get("aprovador_n3"))
+        aprovadores_n3 = resolver_aprovadores_n3(data.get("frente"), marcas_selecionadas)
+        for n3 in aprovadores_n3:
+            n3["tag"] = f"<@{n3['slack_id']}>" if (N3_MARCAR_APROVADORES and n3["slack_id"]) else f"@{n3['nome']}"
+        aprovador_n3_tag = ", ".join(
+            f"{n3['tag']} ({', '.join(n3['marcas'])})" for n3 in aprovadores_n3
+        ) or "N3 não mapeado para esta Frente/Marca"
+        # Modo alta demanda: exceções da diretoria N3 vão para o N3 de cada marca do pedido
+        if MODO_ALTA_DEMANDA and aprovadores_n3:
+            for item in excecoes_detalhes:
+                if item.get("aprov_com_nome") == N3_GENERICO:
+                    item["aprov_com_tag"] = ", ".join(n3["tag"] for n3 in aprovadores_n3)
         raw_lines.extend([
             "Renovação",
             f"% Reajuste Líquido: {reajuste_display}",
@@ -905,54 +948,161 @@ def handle_submission(ack, body, client):
             all_split_lines.append(sub)
     unified_quote_text = "\n".join(f"> {l}" if l.strip() else ">" for l in all_split_lines)
 
+    # Versão escaneável do post no canal (renderizada por build_thread_blocks / build_post_blocks)
+    resumo = []
+    if acv_limpo != "-":
+        resumo.append(f"💵 *R$ {acv_limpo}*")
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        resumo.append(f"📉 Reajuste *{reajuste_display}*")
+    if marcas_str:
+        resumo.append(marcas_str)
+    if data.get("frente"):
+        resumo.append(data["frente"])
+    if alunado_val and alunado_val != "-":
+        resumo.append(f"{alunado_val} alunos")
+
+    pessoas = [f"👤 {consultor_tag}", f"🧭 Líder {lider_tag}"]
+    if link_sf != "-":
+        pessoas.append(f"🔗 <{link_sf}|SalesForce>")
+    # Arquivo do Slack vira botão (link no texto faz o Slack mostrar a prévia grande do XLSX)
+    simulador_url = url_arq if sim_files and url_arq != "#" else ""
+    if link_simulador != "-" and not simulador_url:
+        pessoas.append(f"📎 {link_simulador}")
+
+    # Resumo do card na thread: um item por linha, nesta ordem (alunado fica só na mensagem de dados da escola)
+    itens_resumo = []
+    if acv_limpo != "-":
+        itens_resumo.append(f"💵 *R$ {acv_limpo}*")
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        itens_resumo.append(f"📉 Reajuste *{reajuste_display}*")
+    if data.get("frente"):
+        itens_resumo.append(data["frente"])
+    if marcas_str:
+        itens_resumo.append(marcas_str)
+    itens_resumo.append(f"👤 {consultor_tag}  ·  🧭 Líder {lider_tag}")
+    if link_sf != "-":
+        itens_resumo.append(f"🔗 <{link_sf}|SalesForce>")
+    if link_simulador != "-" and not simulador_url:
+        itens_resumo.append(f"📎 {link_simulador}")
+
+    extras = []
+    if rede_val == "sim":
+        extras.append(f"🏢 Rede: {data.get('nome_rede') or 'Sim'}")
+    if data.get("tem_divida") == "sim" and data.get("valor_divida"):
+        extras.append(f"{'🚨' if tem_divida_alta else '💸'} Dívida: R$ {divida_fmt}")
+    if tipo_fluxo != FLUXO_RENOVACAO and marcas_com_inviab:
+        extras.append("⚠️ Inviabilidade: " + ", ".join(f"{m} ({p})" for m, p in marcas_com_inviab))
+
+    excecoes_sem_alcada = []
+    for item in excecoes_detalhes:
+        if item.get("aprov_com_nome") or item.get("aprov_ops_nome"):
+            continue
+        if "não precisa" in str(item.get("regra_comercial", "")).lower():
+            linha = f"➖ Exceção {item['numero']} · {item['nome'][:70]} · não precisa de aprovação"
+        else:
+            linha = f"⚠️ Exceção {item['numero']} · {item['nome'][:70]} · sem aprovador definido na regra"
+        if item.get("contexto"):
+            linha += "\n> 📝 " + str(item["contexto"])[:1500].replace("\n", "\n> ")
+        excecoes_sem_alcada.append(linha)
+
+    post_view = {
+        "fluxo": "Renovação" if tipo_fluxo == FLUXO_RENOVACAO else "Crescimento",
+        "escola": data.get("razao_social") or "Escola",
+        "resumo": "  ·  ".join(resumo),
+        "pessoas": "  ·  ".join(pessoas),
+        "extras": extras,
+        "excecoes_sem_alcada": excecoes_sem_alcada,
+        "simulador_url": simulador_url,
+        "cnpj": cnpj_formatado,
+        "itens": itens_resumo,
+        "contexto_geral": data.get("contexto_geral") or "",
+        "contextos_excecoes": {str(item["numero"]): item.get("contexto") or "" for item in excecoes_detalhes},
+    }
+
     # Mapeamento das Alçadas Individuais com Botões e Escopo de Aprovação
     approvals_list = []
 
     # Alçada Comercial (Líder Direto do Consultor)
-    lider_display = format_mention(lider_id).replace("@", "").strip() if lider_id else "Líder Direto"
+    lider_display = "Líder Direto" if (not lider_id or lider_id.startswith(("U", "W"))) else lider_id
     approvals_list.append({
         "key": "comercial",
         "role_title": "👤 APROVAÇÃO COMERCIAL",
         "short_label": "Comercial",
         "approver_id": lider_id if (lider_id and lider_id.startswith(("U", "W"))) else "",
         "approver_name": lider_display,
-        "scope_reason": "Validação de liderança direta sobre as condições comerciais e proposta para o Ciclo CE 2027.",
+        "scope_reason": "",
     })
 
-    # Alçada Operações (se alguma exceção exigir)
-    ops_item = next((item for item in excecoes_detalhes if item.get("regra_ops") != "-" and item.get("aprov_ops_tag") != "-"), None)
-    if ops_item:
-        ops_name = ops_item["aprov_ops_tag"].replace("@", "").strip()
-        exc_nome = ops_item.get("nome", "Exceção Operacional")
-        approvals_list.append({
-            "key": "operacoes",
-            "role_title": "⚙️ APROVAÇÃO OPERAÇÕES",
-            "short_label": "Operações",
-            "approver_id": "",
-            "approver_name": ops_name,
-            "scope_reason": f"Exceção operacional identificada: {exc_nome} (Regra de Operações exigida).",
-        })
+    # Uma alçada por exceção (e por aprovador dela): reprovar uma exceção não encerra o pedido
+    def _aprovador_excecao(nome_regra):
+        if nome_regra == "LIDER_DIRETO":
+            return (lider_id if (lider_id and lider_id.startswith(("U", "W"))) else ""), lider_display
+        slack_id = (APPROVERS_CONFIG.get(nome_regra) or {}).get("slack_id") or ""
+        return slack_id, nome_regra
+
+    for item in excecoes_detalhes:
+        for papel, nome_regra, sufixo, titulo in (
+            ("comercial", item.get("aprov_com_nome"), "com", f"🔹 EXCEÇÃO {item['numero']}: {item['nome']}"),
+            ("operações", item.get("aprov_ops_nome"), "ops", f"⚙️ EXCEÇÃO {item['numero']} (Operações): {item['nome']}"),
+        ):
+            if not nome_regra:
+                continue
+            if nome_regra == N3_GENERICO and not (MODO_ALTA_DEMANDA and aprovadores_n3):
+                ids_diretores = [d["slack_id"] for d in DIRETORES_N3 if d["slack_id"]] if N3_MARCAR_APROVADORES else []
+                approvals_list.append({
+                    "key": f"excecao_{item['numero']}_com",
+                    "role_title": f"{titulo} (Diretoria N3)"[:140],
+                    "short_label": f"Exceção {item['numero']} (Diretoria)",
+                    "approver_id": ids_diretores[0] if ids_diretores else "",
+                    "approver_ids": ids_diretores,
+                    "approver_name": " ou ".join(d["nome"] for d in DIRETORES_N3),
+                    "scope_reason": f"Exceção {item['numero']}: {item['nome']}. Contexto: {item['contexto']}",
+                    "parcial": True,
+                })
+                continue
+            if nome_regra == N3_GENERICO:
+                for idx, n3 in enumerate(aprovadores_n3, start=1):
+                    approvals_list.append({
+                        "key": f"excecao_{item['numero']}_n3_{idx}",
+                        "role_title": f"{titulo} (N3 {n3['nome']})"[:140],
+                        "short_label": f"Exceção {item['numero']} (N3 {n3['nome']})"[:60],
+                        "approver_id": n3["slack_id"] if N3_MARCAR_APROVADORES else "",
+                        "approver_name": n3["nome"],
+                        "scope_reason": f"Exceção {item['numero']}: {item['nome']}, como N3 de {', '.join(n3['marcas'])}. Contexto: {item['contexto']}",
+                        "parcial": True,
+                    })
+                continue
+            approver_id, approver_name = _aprovador_excecao(nome_regra)
+            approvals_list.append({
+                "key": f"excecao_{item['numero']}_{sufixo}",
+                "role_title": titulo[:140],
+                "short_label": f"Exceção {item['numero']}" + (" (Ops)" if sufixo == "ops" else ""),
+                "approver_id": approver_id,
+                "approver_name": approver_name,
+                "scope_reason": f"Exceção {item['numero']} ({papel}): {item['nome']}. Contexto: {item['contexto']}",
+                "parcial": True,
+            })
 
     if tipo_fluxo == FLUXO_RENOVACAO:
         # Alçadas específicas da Renovação: Aprovador do Simulador e Aprovador N3
-        aprovador_simulador_display = aprovador_simulador_tag.replace("@", "").strip()
+        aprovador_simulador_display = "Aprovador do Simulador" if (data.get("aprovador_simulador") or "").startswith(("U", "W")) else aprovador_simulador_tag.lstrip("@")
         approvals_list.append({
             "key": "aprovador_simulador",
             "role_title": "📊 APROVAÇÃO SIMULADOR (Renovação)",
             "short_label": "Aprovador Simulador",
             "approver_id": data.get("aprovador_simulador") if (data.get("aprovador_simulador") or "").startswith(("U", "W")) else "",
             "approver_name": aprovador_simulador_display,
-            "scope_reason": "Aprovador indicado no simulador de renovação, conforme preenchido no formulário.",
+            "scope_reason": "",
         })
-        aprovador_n3_display = aprovador_n3_tag.replace("@", "").strip()
-        approvals_list.append({
-            "key": "aprovador_n3_renovacao",
-            "role_title": "🏛️ APROVAÇÃO N3 (Renovação)",
-            "short_label": "Aprovador N3",
-            "approver_id": data.get("aprovador_n3") if (data.get("aprovador_n3") or "").startswith(("U", "W")) else "",
-            "approver_name": aprovador_n3_display,
-            "scope_reason": "Aprovador de Exceção (Comercial) N3 da Marca/Vertical, conforme preenchido no formulário.",
-        })
+        for idx, n3 in enumerate(aprovadores_n3, start=1):
+            approvals_list.append({
+                "key": f"aprovador_n3_{idx}",
+                "role_title": "🏛️ APROVAÇÃO N3 (Renovação)",
+                "short_label": f"N3 {n3['nome']}"[:60],
+                "approver_id": n3["slack_id"] if N3_MARCAR_APROVADORES else "",
+                "approver_name": n3["nome"],
+                "scope_reason": f"Aprovador de Exceção (Comercial) N3 de {data.get('frente')} para: {', '.join(n3['marcas'])}.",
+            })
     else:
         # Alçada Inviabilidade (Crescimento) - Core e Plus são aprovações independentes
         if core_inviab_vals:
@@ -988,6 +1138,11 @@ def handle_submission(ack, body, client):
             "scope_reason": f"Pendência financeira crítica: Dívida da escola informada em R$ {divida_val_display}.",
         })
 
+    nomes_excecoes = {str(item["numero"]): item["nome"] for item in excecoes_detalhes}
+    marcas_n3 = {f"aprovador_n3_{idx}": ", ".join(n3["marcas"]) for idx, n3 in enumerate(aprovadores_n3, start=1)}
+    for apprv in approvals_list:
+        apprv["checklist_label"] = rotulo_checklist(apprv["key"], apprv.get("short_label", ""), nomes_excecoes, marcas_n3)
+
     extra_ticket_data = {
         "tipo_fluxo": tipo_fluxo,
         "acv": f"R$ {acv_limpo}" if acv_limpo and acv_limpo != "-" else "Não informado",
@@ -1014,7 +1169,8 @@ def handle_submission(ack, body, client):
         # Campos específicos da Renovação (ficam vazios/None no fluxo de Crescimento)
         "pct_reajuste_liquido": data.get("reajuste_liquido") if tipo_fluxo == FLUXO_RENOVACAO else None,
         "aprovador_simulador": aprovador_simulador_tag.replace("@", "").strip() if tipo_fluxo == FLUXO_RENOVACAO else "",
-        "aprovador_n3_renovacao": aprovador_n3_tag.replace("@", "").strip() if tipo_fluxo == FLUXO_RENOVACAO else "",
+        "aprovador_n3_renovacao": ", ".join(n3["nome"] for n3 in aprovadores_n3),
+        "post_view": post_view,
     }
 
     # 1. Posta a MENSAGEM ÚNICA no canal
@@ -1034,20 +1190,23 @@ def handle_submission(ack, body, client):
                 "role_title": apprv["role_title"],
                 "short_label": apprv["short_label"],
                 "approver_id": apprv.get("approver_id") or "",
+                "approver_ids": apprv.get("approver_ids") or [],
                 "approver_name": apprv["approver_name"],
                 "scope_reason": apprv.get("scope_reason", ""),
+                "checklist_label": apprv.get("checklist_label", ""),
                 "status": "pending",
             }
             for apprv in approvals_list
         }
     }
-    initial_blocks = build_thread_blocks(temp_ticket)
 
-    tipo_fluxo_label_curto = "Crescimento" if tipo_fluxo == FLUXO_CRESCIMENTO else "Renovação"
+    # 1. Canal: só a notificação (tipo, escola, CNPJ e status). Botões e detalhes ficam na thread.
     resp = client.chat_postMessage(
         channel=channel_id,
-        text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {data.get('razao_social')}",
-        blocks=initial_blocks,
+        text=texto_aviso_canal(temp_ticket),
+        blocks=build_channel_notice_blocks(temp_ticket),
+        unfurl_links=False,
+        unfurl_media=False,
     )
     thread_ts = resp["ts"]
 
@@ -1072,19 +1231,23 @@ def handle_submission(ack, body, client):
         thread_permalink=thread_permalink,
         extra_data=extra_ticket_data,
     )
-    update_ticket_card_ts(ticket["key"], thread_ts)
 
-    # Atualiza a mensagem única postada com os valores e botões reais vinculados à chave do ticket
-    real_blocks = build_thread_blocks(ticket)
+    # 2. Thread: card de aprovação (status, resumo, checklist e botões), atualizado a cada decisão
+    ticket["card_na_thread"] = True
     try:
-        client.chat_update(
+        card_resp = client.chat_postMessage(
             channel=channel_id,
-            ts=thread_ts,
-            blocks=real_blocks,
-            text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {ticket['escola']}"
+            thread_ts=thread_ts,
+            text=texto_card_thread(ticket),
+            blocks=build_thread_blocks(ticket),
+            metadata=metadata_ticket(ticket),
+            unfurl_links=False,
+            unfurl_media=False,
         )
+        ticket["card_msg_ts"] = card_resp["ts"]
+        update_ticket_card_ts(ticket["key"], card_resp["ts"])
     except Exception as e:
-        logger.warning(f"Erro ao atualizar valores dos botões no post inicial: {e}")
+        logger.error(f"Erro ao postar o card de aprovação na thread: {e}")
 
     # Envia os cards executivos individuais na DM privada de cada aprovador
     try:
@@ -1200,10 +1363,10 @@ def handle_dm_approval_action(ack, body, client):
 
         # Espelhamento imediato na Thread pública
         try:
-            client.chat_postMessage(
+            client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                 channel=ticket["channel_id"],
                 thread_ts=ticket["thread_ts"],
-                text=f"✅ *{role_title}* aprovada via DM privada por <@{user_id}> em {now_str}."
+                text=f"✅ *{apprv.get('checklist_label') or role_title}* aprovada por <@{user_id}> em {now_str}."
             )
         except Exception as e:
             logger.error(f"Erro ao postar confirmação na thread: {e}")
@@ -1215,7 +1378,8 @@ def handle_dm_approval_action(ack, body, client):
                 channel=ticket["channel_id"],
                 ts=ticket["thread_ts"],
                 blocks=main_status_blocks,
-                text=f"Aprovações Arco: {updated_ticket['escola']}"
+                text=texto_post_principal(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.warning(f"Erro ao espelhar status no post principal: {e}")
@@ -1229,7 +1393,8 @@ def handle_dm_approval_action(ack, body, client):
                     channel=ticket["channel_id"],
                     ts=card_msg_ts,
                     blocks=updated_blocks,
-                    text=f"Status de Aprovações: {updated_ticket['escola']}"
+                    text=texto_card_thread(updated_ticket),
+                    metadata=metadata_ticket(updated_ticket)
                 )
             except Exception as e:
                 logger.error(f"Erro ao atualizar card da thread: {e}")
@@ -1237,15 +1402,16 @@ def handle_dm_approval_action(ack, body, client):
         # Se todas as alçadas foram aprovadas: ENCERRAMENTO AUTOMÁTICO IMEDIATO!
         if res.get("all_completed"):
             try:
-                client.chat_postMessage(
+                client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                     channel=ticket["channel_id"],
                     thread_ts=ticket["thread_ts"],
-                    text="🎉 *SOLICITAÇÃO 100% APROVADA E CONCLUÍDA!* Todos os decisores de alçada deliberaram. Ticket formalmente encerrado e liberado para emissão de contrato."
+                    text=mensagem_conclusao(updated_ticket),
+                    blocks=blocos_conclusao(updated_ticket)
                 )
                 client.reactions_add(
                     channel=ticket["channel_id"],
                     timestamp=ticket["thread_ts"],
-                    name="white_check_mark"
+                    name=reacao_conclusao(updated_ticket)
                 )
             except Exception as e:
                 logger.warning(f"Erro no encerramento automático: {e}")
@@ -1314,7 +1480,16 @@ def handle_thread_approval_action(ack, body, client):
         )
         return
 
+    _registrar_aprovacao(client, ticket, approval_key, user_id, user_name)
+
+
+def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, user_name: str):
+    """Aprova a alçada, atualiza o post do canal, avisa na thread e no DM do consultor e encerra se tudo foi decidido."""
+    ticket_key = ticket["key"]
+    apprv = ticket["approvals"][approval_key]
     res = approve_step(ticket_key, approval_key, user_id, user_name)
+    if not res.get("success") or res.get("already_approved"):
+        return res.get("ticket") or ticket
     updated_ticket = res["ticket"]
 
     card_msg_ts = updated_ticket.get("card_msg_ts")
@@ -1325,7 +1500,8 @@ def handle_thread_approval_action(ack, body, client):
                 channel=ticket["channel_id"],
                 ts=card_msg_ts,
                 blocks=updated_blocks,
-                text=f"Status de Aprovações: {updated_ticket['escola']}"
+                text=texto_card_thread(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar mensagem da thread: {e}")
@@ -1336,16 +1512,17 @@ def handle_thread_approval_action(ack, body, client):
             channel=ticket["channel_id"],
             ts=ticket["thread_ts"],
             blocks=main_status_blocks,
-            text=f"Aprovações Arco: {updated_ticket['escola']}"
+            text=texto_post_principal(updated_ticket),
+            metadata=metadata_ticket(updated_ticket)
         )
     except Exception as e:
         logger.warning(f"Erro ao espelhar status no post principal: {e}")
 
     now_str = datetime.now().strftime("%d/%m às %Hh%M")
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False,
         channel=ticket["channel_id"],
         thread_ts=ticket["thread_ts"],
-        text=f"✅ *{apprv['role_title']}* aprovada com sucesso por <@{user_id}> em {now_str}."
+        text=f"✅ *{apprv.get('checklist_label') or apprv['role_title']}* aprovada por <@{user_id}> em {now_str}."
     )
 
     # Feedback em tempo real na DM privada do Consultor
@@ -1361,19 +1538,119 @@ def handle_thread_approval_action(ack, body, client):
         logger.error(f"Erro ao enviar feedback DM ao consultor: {e}")
 
     if res.get("all_completed"):
-        client.chat_postMessage(
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=ticket["channel_id"],
             thread_ts=ticket["thread_ts"],
-            text="🎉 *SOLICITAÇÃO 100% APROVADA E CONCLUÍDA!* Todos os decisores de alçada deliberaram. Ticket formalmente encerrado e liberado para emissão de contrato."
+            text=mensagem_conclusao(updated_ticket),
+            blocks=blocos_conclusao(updated_ticket)
         )
         try:
             client.reactions_add(
                 channel=ticket["channel_id"],
                 timestamp=ticket["thread_ts"],
-                name="white_check_mark"
+                name=reacao_conclusao(updated_ticket)
             )
         except Exception as e:
             logger.warning(f"Reação check_mark: {e}")
+    return updated_ticket
+
+
+# =========================================================================
+# 4.0. "DECIDIR MINHAS APROVAÇÕES" (post com botão único, POST_BOTOES=unico)
+# =========================================================================
+
+@app.action("btn_abrir_simulador")
+def handle_btn_abrir_simulador(ack):
+    """Botão de link do XLSX do simulador: o Slack abre o arquivo, aqui só confirma o clique."""
+    ack()
+
+
+@app.action("btn_decidir_minhas")
+def handle_btn_decidir_minhas(ack, body, client):
+    """Abre uma janela só com as alçadas pendentes de quem clicou."""
+    ack()
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+    ticket = get_ticket(body["actions"][0].get("value", ""))
+    if not ticket:
+        client.chat_postEphemeral(channel=channel_id, user=user_id, text="⚠️ Solicitação não encontrada no histórico ativo do sistema.")
+        return
+    if ticket.get("status") in ("completed", "rejected"):
+        client.chat_postEphemeral(channel=channel_id, user=user_id, text="ℹ️ Esta solicitação já foi encerrada.")
+        return
+    if not alcadas_do_usuario(ticket, user_id, check_approval_authorization):
+        client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text="ℹ️ Você não tem aprovações pendentes nesta solicitação.",
+        )
+        return
+    safe_views_open(client, body["trigger_id"], build_decidir_modal(ticket, user_id, check_approval_authorization))
+
+
+@app.action("decidir_aprovar")
+def handle_decidir_aprovar(ack, body, client):
+    """Aprovar dentro da janela "Minhas aprovações": registra e atualiza a janela."""
+    ack()
+    user_id = body["user"]["id"]
+    user_name = body["user"].get("name") or body["user"].get("username") or "Usuário"
+    ticket_key, _, approval_key = body["actions"][0].get("value", "").partition(":")
+    ticket = get_ticket(ticket_key)
+    if not ticket or approval_key not in ticket.get("approvals", {}):
+        return
+    autorizado, _ = check_approval_authorization(ticket["approvals"][approval_key], user_id)
+    if autorizado:
+        ticket = _registrar_aprovacao(client, ticket, approval_key, user_id, user_name)
+    try:
+        client.views_update(view_id=body["view"]["id"], view=build_decidir_modal(ticket, user_id, check_approval_authorization))
+    except Exception as e:
+        logger.error(f"Erro ao atualizar a janela de aprovações: {e}")
+
+
+@app.action("decidir_reprovar")
+def handle_decidir_reprovar(ack, body, client):
+    """Reprovar dentro da janela "Minhas aprovações": empilha a janela de motivo da reprovação."""
+    ack()
+    user_id = body["user"]["id"]
+    ticket_key, _, approval_key = body["actions"][0].get("value", "").partition(":")
+    ticket = get_ticket(ticket_key)
+    if not ticket or approval_key not in ticket.get("approvals", {}):
+        return
+    apprv = ticket["approvals"][approval_key]
+    autorizado, _ = check_approval_authorization(apprv, user_id)
+    if not autorizado or apprv.get("status") != "pending":
+        return
+    modal = build_reprovar_modal(
+        ticket_key=ticket_key,
+        approval_key=approval_key,
+        role_title=apprv.get("checklist_label") or apprv.get("role_title", "Alçada"),
+        escola=ticket.get("escola", "Escola"),
+        consultor_id=ticket.get("consultor_id", ""),
+        consultor_name=ticket.get("consultor_name", "Consultor"),
+        channel_id=ticket.get("channel_id", DEFAULT_CHANNEL_ID),
+        is_from_dm=False,
+    )
+    metadata = json.loads(modal.get("private_metadata") or "{}")
+    metadata["from_decidir"] = True
+    modal["private_metadata"] = json.dumps(metadata)
+    try:
+        client.views_push(trigger_id=body["trigger_id"], view=modal)
+    except Exception as e:
+        logger.error(f"Erro ao abrir a janela de reprovação: {e}")
+
+
+@app.action("triagem_menu")
+def handle_triagem_menu(ack, body, client):
+    """Menu "⋯" do post: ações da @triagem (substituir aprovador, cobrar pendências)."""
+    ack()
+    escolha, _, ticket_key = body["actions"][0]["selected_option"]["value"].partition(":")
+    user_id = body["user"]["id"]
+    user_name = body["user"].get("name") or body["user"].get("username") or "Usuário"
+    channel_id = body["channel"]["id"]
+    if escolha == "sub":
+        _abrir_substituicao(client, user_id, user_name, channel_id, ticket_key, body["trigger_id"])
+    else:
+        _cobrar_ticket(client, user_id, user_name, channel_id, ticket_key)
 
 
 # =========================================================================
@@ -1407,7 +1684,7 @@ def handle_thread_reprovar_action(ack, body, client):
         client.chat_postEphemeral(
             channel=body["channel"]["id"],
             user=user_id,
-            text=f"⚠️ Este ticket já foi finalizado como *{ticket.get('status')}*."
+            text=f"⚠️ Este ticket já foi finalizado como *{_status_pt(ticket.get('status'))}*."
         )
         return
 
@@ -1486,7 +1763,11 @@ def handle_view_reprovar_ticket(ack, body, client, view):
         ack(response_action="errors", errors=errors)
         return
 
-    ack()
+    # Aberta a partir de "Decidir minhas aprovações": fecha as duas janelas
+    if metadata.get("from_decidir"):
+        ack(response_action="clear")
+    else:
+        ack()
 
     reason_map = {
         "negociacao_caiu": "a. Negociação caiu",
@@ -1519,30 +1800,41 @@ def handle_view_reprovar_ticket(ack, body, client, view):
     consultor_tag = f"<@{consultor_id}>" if consultor_id and consultor_id.startswith(("U", "W")) else f"@{metadata.get('consultor_name', 'Consultor')}"
     detalhes_txt = f"\n• *Justificativa / Apontamentos:* _{detalhes.strip()}_" if detalhes.strip() else ""
 
-    alert_msg = (
-        f"🚨 *SOLICITAÇÃO COMERCIAL REPROVADA*\n"
-        f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
-        f"• *Escola:* *{escola}*\n"
-        f"• *Alçada:* *{role_title}* deliberada por <@{user_id}> em {now_str}\n"
-        f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n"
-        f"⛔ *Status:* *Ticket encerrado.* Para nova análise ou correção, submeta uma nova solicitação via `/solicitacao`."
-    )
+    is_parcial = bool(res.get("parcial"))
+    if is_parcial:
+        alert_msg = (
+            f"❌ *EXCEÇÃO REPROVADA*\n"
+            f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
+            f"• *{role_title}* reprovada por <@{user_id}> em {now_str}\n"
+            f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n"
+            f"➡️ Essa exceção sai do pedido. As demais alçadas seguem normalmente."
+        )
+    else:
+        alert_msg = (
+            f"❌ *ALÇADA REPROVADA*\n"
+            f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
+            f"• *{role_title}* reprovada por <@{user_id}> em {now_str}\n"
+            f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}"
+        )
 
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False,
         channel=channel_id,
         thread_ts=updated_ticket["thread_ts"],
         text=alert_msg
     )
 
-    # 2. Adiciona reação de :x: na mensagem inicial da thread
-    try:
-        client.reactions_add(
+    # Quando todas as alçadas decidiram: mensagem de encerramento e reação (✅ ou ❌) na mensagem inicial
+    if res.get("all_completed"):
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=channel_id,
-            timestamp=updated_ticket["thread_ts"],
-            name="x"
+            thread_ts=updated_ticket["thread_ts"],
+            text=mensagem_conclusao(updated_ticket),
+            blocks=blocos_conclusao(updated_ticket)
         )
-    except Exception as e:
-        logger.warning(f"Reação :x: na thread: {e}")
+        try:
+            client.reactions_add(channel=channel_id, timestamp=updated_ticket["thread_ts"], name=reacao_conclusao(updated_ticket))
+        except Exception as e:
+            logger.warning(f"Reação na thread: {e}")
 
     # 3. Atualiza o card de status na thread
     card_msg_ts = updated_ticket.get("card_msg_ts")
@@ -1553,7 +1845,8 @@ def handle_view_reprovar_ticket(ack, body, client, view):
                 channel=channel_id,
                 ts=card_msg_ts,
                 blocks=updated_blocks,
-                text=f"Status de Aprovações: {updated_ticket['escola']}"
+                text=texto_card_thread(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar card da thread pós-reprovação: {e}")
@@ -1565,7 +1858,8 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             channel=channel_id,
             ts=updated_ticket["thread_ts"],
             blocks=main_status_blocks,
-            text=f"Aprovações Arco: {updated_ticket['escola']}"
+            text=texto_post_principal(updated_ticket),
+            metadata=metadata_ticket(updated_ticket)
         )
     except Exception as e:
         logger.warning(f"Erro ao atualizar post principal pós-reprovação: {e}")
@@ -1621,6 +1915,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             "rejected_by_name": user_name,
             "reason_label": reason_label,
             "details": detalhes.strip(),
+            "parcial": is_parcial,
         }
         send_consultor_rejection_dm(
             client=client,
@@ -1638,15 +1933,19 @@ def handle_view_reprovar_ticket(ack, body, client, view):
 
 @app.action("btn_triagem_substituicao")
 def handle_btn_triagem_substituicao(ack, body, client):
-    """
-    Ação acionada pelo botão da @triagem dentro da thread para trocar aprovador por ausência.
-    """
+    """Botão da @triagem (posts antigos) para trocar aprovador por ausência."""
     ack()
-    user_id = body["user"]["id"]
-    user_name = body["user"].get("name") or body["user"].get("username") or "Usuário"
-    channel_id = body["channel"]["id"]
-    action_val = body["actions"][0].get("value", "")
+    _abrir_substituicao(
+        client,
+        body["user"]["id"],
+        body["user"].get("name") or body["user"].get("username") or "Usuário",
+        body["channel"]["id"],
+        body["actions"][0].get("value", ""),
+        body["trigger_id"],
+    )
 
+
+def _abrir_substituicao(client, user_id: str, user_name: str, channel_id: str, ticket_key: str, trigger_id: str):
     if not is_user_triagem(user_id, user_name):
         client.chat_postEphemeral(
             channel=channel_id,
@@ -1655,7 +1954,7 @@ def handle_btn_triagem_substituicao(ack, body, client):
         )
         return
 
-    ticket = get_ticket(action_val)
+    ticket = get_ticket(ticket_key)
     if not ticket:
         client.chat_postEphemeral(
             channel=channel_id,
@@ -1668,7 +1967,7 @@ def handle_btn_triagem_substituicao(ack, body, client):
         client.chat_postEphemeral(
             channel=channel_id,
             user=user_id,
-            text=f"⚠️ Este ticket já se encontra finalizado como *{ticket.get('status')}*. A substituição só é permitida em tickets pendentes."
+            text=f"⚠️ Este ticket já se encontra finalizado como *{_status_pt(ticket.get('status'))}*. A substituição só é permitida em tickets pendentes."
         )
         return
 
@@ -1677,20 +1976,23 @@ def handle_btn_triagem_substituicao(ack, body, client):
         current_user_id=user_id,
         channel_id=channel_id,
     )
-    safe_views_open(client, body["trigger_id"], modal)
+    safe_views_open(client, trigger_id, modal)
 
 
 @app.action("btn_triagem_cobrar_ticket")
 def handle_btn_triagem_cobrar_ticket(ack, body, client):
-    """
-    Ação acionada pelo botão da @triagem dentro da thread para cobrar pendências deste ticket específico.
-    """
+    """Botão da @triagem (posts antigos) para cobrar as pendências deste ticket."""
     ack()
-    user_id = body["user"]["id"]
-    user_name = body["user"].get("name") or body["user"].get("username") or "Triagem"
-    channel_id = body["channel"]["id"]
-    ticket_key = body["actions"][0].get("value", "")
+    _cobrar_ticket(
+        client,
+        body["user"]["id"],
+        body["user"].get("name") or body["user"].get("username") or "Triagem",
+        body["channel"]["id"],
+        body["actions"][0].get("value", ""),
+    )
 
+
+def _cobrar_ticket(client, user_id: str, user_name: str, channel_id: str, ticket_key: str):
     if not is_user_triagem(user_id, user_name):
         client.chat_postEphemeral(
             channel=channel_id,
@@ -1892,7 +2194,7 @@ def handle_view_triagem_substituicao(ack, body, client, view):
         f"ℹ️ _O aprovador substituto já recebeu o card executivo para deliberação na DM e possui autorização imediata para aprovar ou reprovar esta solicitação._"
     )
 
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False,
         channel=channel_id,
         thread_ts=updated_ticket["thread_ts"],
         text=audit_msg
@@ -1907,7 +2209,8 @@ def handle_view_triagem_substituicao(ack, body, client, view):
                 channel=channel_id,
                 ts=card_msg_ts,
                 blocks=updated_blocks,
-                text=f"Status de Aprovações: {updated_ticket['escola']}"
+                text=texto_card_thread(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar card da thread pós-substituição: {e}")
@@ -1959,20 +2262,24 @@ def handle_msg_cobranca(message, say, client):
 # =========================================================================
 
 if __name__ == "__main__":
+    from services.sheets_service import is_enabled as sheets_enabled
+    logger.info("📊 Planilha do Google: " + ("ATIVA" if sheets_enabled() else "desligada (sem GOOGLE_SHEET_ID ou google_credentials.json)"))
+    from services.ticket_service import modo_botoes_post
+    logger.info(f"🔘 Botões do post: {modo_botoes_post()} (POST_BOTOES no .env: unico = opção A, por_alcada = opção B)")
     try:
         bg_scheduler = BackgroundScheduler()
         bg_scheduler.add_job(
             lambda: executar_cobranca_pendencias(app.client),
-            CronTrigger(hour=11, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
-            id="cobranca_11h"
+            CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
+            id="cobranca_09h"
         )
         bg_scheduler.add_job(
             lambda: executar_cobranca_pendencias(app.client),
-            CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
-            id="cobranca_17h"
+            CronTrigger(hour=14, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
+            id="cobranca_14h"
         )
         bg_scheduler.start()
-        logger.info("⏰ Agendador de Cobrança Inteligente ativo (11:00 e 17:00, horário de Brasília, seg-sex). DMs só saem para SLA vencido.")
+        logger.info("⏰ Agendador de Cobrança Inteligente ativo (09:00 e 14:00, horário de Brasília, seg-sex). DMs só saem para SLA vencido.")
     except Exception as e:
         logger.warning(f"Aviso ao iniciar BackgroundScheduler: {e}")
 

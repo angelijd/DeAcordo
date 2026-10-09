@@ -2,8 +2,6 @@ import re
 import json
 from typing import Dict, Any, Optional
 from config.exceptions_rules import ALL_EXCEPTIONS_LIST
-from config.mock_users import MOCK_CONSULTORES, MOCK_LIDERES, MOCK_APROVADORES
-from config.triagem_config import USE_MOCK_USERS
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO
 from utils.currency_words import valor_para_extenso, format_real_input
 
@@ -18,7 +16,8 @@ FRENTES_OPTIONS_POR_FLUXO = {
         "(CE) KA",
     ],
     FLUXO_RENOVACAO: [
-        "CSE/CSP",
+        "CSE",
+        "CSP",
     ],
 }
 
@@ -198,30 +197,12 @@ def build_aprovacoes_modal(
     # 2. Consultor (P2) - Obrigatório (Preenchido com o usuário atual)
     # -------------------------------------------------------------
     initial_consultor = saved_values.get("consultor") or current_user_id
-    if USE_MOCK_USERS:
-        consultor_options = [
-            {"text": {"type": "plain_text", "text": "Meu Usuário Atual (Você)"}, "value": current_user_id}
-        ] + [
-            {"text": {"type": "plain_text", "text": c["name"]}, "value": c["name"]}
-            for c in MOCK_CONSULTORES
-        ]
-        consultor_element = {
-            "type": "static_select",
-            "action_id": "consultor_select",
-            "placeholder": {"type": "plain_text", "text": "Selecionar consultor"},
-            "options": consultor_options,
-        }
-        for opt in consultor_options:
-            if opt["value"] == initial_consultor or (initial_consultor == current_user_id and "Você" in opt["text"]["text"]):
-                consultor_element["initial_option"] = opt
-                break
-    else:
-        consultor_element = {
-            "type": "users_select",
-            "action_id": "consultor_select",
-            "placeholder": {"type": "plain_text", "text": "Selecionar um usuário"},
-            "initial_user": initial_consultor,
-        }
+    consultor_element = {
+        "type": "users_select",
+        "action_id": "consultor_select",
+        "placeholder": {"type": "plain_text", "text": "Selecionar um usuário"},
+        "initial_user": initial_consultor,
+    }
 
     blocks.append({
         "type": "input",
@@ -233,32 +214,13 @@ def build_aprovacoes_modal(
     # -------------------------------------------------------------
     # 3. Líder direto do Consultor (P3) - Obrigatório
     # -------------------------------------------------------------
-    if USE_MOCK_USERS:
-        lider_options = [
-            {"text": {"type": "plain_text", "text": "Meu Usuário Atual (Você - Para Teste)"}, "value": current_user_id}
-        ] + [
-            {"text": {"type": "plain_text", "text": l["name"]}, "value": l["name"]}
-            for l in MOCK_LIDERES
-        ]
-        lider_element = {
-            "type": "static_select",
-            "action_id": "lider_select",
-            "placeholder": {"type": "plain_text", "text": "Selecionar líder"},
-            "options": lider_options,
-        }
-        if saved_values.get("lider"):
-            for opt in lider_options:
-                if opt["value"] == saved_values.get("lider"):
-                    lider_element["initial_option"] = opt
-                    break
-    else:
-        lider_element = {
-            "type": "users_select",
-            "action_id": "lider_select",
-            "placeholder": {"type": "plain_text", "text": "Selecionar um usuário"},
-        }
-        if saved_values.get("lider"):
-            lider_element["initial_user"] = saved_values.get("lider")
+    lider_element = {
+        "type": "users_select",
+        "action_id": "lider_select",
+        "placeholder": {"type": "plain_text", "text": "Selecionar um usuário"},
+    }
+    if saved_values.get("lider"):
+        lider_element["initial_user"] = saved_values.get("lider")
 
     blocks.append({
         "type": "input",
@@ -372,6 +334,8 @@ def build_aprovacoes_modal(
         tipo_str = cnpj_info.get('tipo') or 'MATRIZ'
         detalhes = f"✅ Encontrado: {cnpj_info.get('municipio')}/{cnpj_info.get('uf')} | {tipo_str} | Status: {cnpj_info.get('situacao', 'ATIVA')}"
         razao_hint_text = detalhes
+    elif cnpj_info.get("erro"):
+        razao_hint_text = f"⚠️ {cnpj_info['erro']}"
 
     blocks.append({
         "type": "input",
@@ -643,30 +607,13 @@ def build_aprovacoes_modal(
             "label": {"type": "plain_text", "text": "% Reajuste Líquido:"},
         })
 
-        if USE_MOCK_USERS:
-            aprov_sim_options = [
-                {"text": {"type": "plain_text", "text": ap["name"][:75]}, "value": ap["id"]}
-                for ap in MOCK_APROVADORES
-            ]
-            aprovador_simulador_elem = {
-                "type": "static_select",
-                "action_id": "aprovador_simulador_select",
-                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador"},
-                "options": aprov_sim_options,
-            }
-            if saved_values.get("aprovador_simulador"):
-                for opt in aprov_sim_options:
-                    if opt["value"] == saved_values.get("aprovador_simulador"):
-                        aprovador_simulador_elem["initial_option"] = opt
-                        break
-        else:
-            aprovador_simulador_elem = {
-                "type": "users_select",
-                "action_id": "aprovador_simulador_select",
-                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador"},
-            }
-            if saved_values.get("aprovador_simulador"):
-                aprovador_simulador_elem["initial_user"] = saved_values.get("aprovador_simulador")
+        aprovador_simulador_elem = {
+            "type": "users_select",
+            "action_id": "aprovador_simulador_select",
+            "placeholder": {"type": "plain_text", "text": "Selecione o aprovador"},
+        }
+        if saved_values.get("aprovador_simulador"):
+            aprovador_simulador_elem["initial_user"] = saved_values.get("aprovador_simulador")
         blocks.append({
             "type": "input",
             "block_id": "aprovador_simulador_block",
@@ -674,35 +621,15 @@ def build_aprovacoes_modal(
             "label": {"type": "plain_text", "text": "Aprovador indicado no simulador:"},
         })
 
-        if USE_MOCK_USERS:
-            aprov_n3_options = [
-                {"text": {"type": "plain_text", "text": ap["name"][:75]}, "value": ap["id"]}
-                for ap in MOCK_APROVADORES
-            ]
-            aprovador_n3_elem = {
-                "type": "static_select",
-                "action_id": "aprovador_n3_select",
-                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador N3"},
-                "options": aprov_n3_options,
-            }
-            if saved_values.get("aprovador_n3"):
-                for opt in aprov_n3_options:
-                    if opt["value"] == saved_values.get("aprovador_n3"):
-                        aprovador_n3_elem["initial_option"] = opt
-                        break
-        else:
-            aprovador_n3_elem = {
-                "type": "users_select",
-                "action_id": "aprovador_n3_select",
-                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador N3"},
-            }
-            if saved_values.get("aprovador_n3"):
-                aprovador_n3_elem["initial_user"] = saved_values.get("aprovador_n3")
         blocks.append({
-            "type": "input",
-            "block_id": "aprovador_n3_block",
-            "element": aprovador_n3_elem,
-            "label": {"type": "plain_text", "text": "Aprovador de Exceção (Comercial) N3 da Marca/Vertical:"},
+            "type": "context",
+            "block_id": "aprovador_n3_info_block",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "🏛️ *Aprovador N3:* definido automaticamente pela Frente (CSE/CSP) e pela(s) Marca(s).",
+                }
+            ],
         })
     else:
         # -------------------------------------------------------------
@@ -950,10 +877,6 @@ def extract_modal_values(view_state: Dict[str, Any], num_exceptions: int) -> Dic
         get_user("aprovador_simulador_block", "aprovador_simulador_select")
         or get_selected("aprovador_simulador_block", "aprovador_simulador_select")
     )
-    res["aprovador_n3"] = (
-        get_user("aprovador_n3_block", "aprovador_n3_select")
-        or get_selected("aprovador_n3_block", "aprovador_n3_select")
-    )
 
     # Fallback manual do tipo de fluxo, quando o canal não foi mapeado
     res["tipo_fluxo"] = get_selected("tipo_fluxo_select_block", "tipo_fluxo_select")
@@ -1099,25 +1022,11 @@ def build_triagem_substituicao_modal(
         })
 
     # Opções de aprovador substituto
-    if USE_MOCK_USERS:
-        substitute_options = [
-            {"text": {"type": "plain_text", "text": "Meu Usuário Atual (Você - Para Teste)"}, "value": current_user_id}
-        ] + [
-            {"text": {"type": "plain_text", "text": ap["name"][:75]}, "value": ap["id"]}
-            for ap in MOCK_APROVADORES
-        ]
-        substitute_element = {
-            "type": "static_select",
-            "action_id": "novo_aprovador_select",
-            "placeholder": {"type": "plain_text", "text": "Selecione o aprovador substituto"},
-            "options": substitute_options,
-        }
-    else:
-        substitute_element = {
-            "type": "users_select",
-            "action_id": "novo_aprovador_select",
-            "placeholder": {"type": "plain_text", "text": "Selecione o usuário substituto"},
-        }
+    substitute_element = {
+        "type": "users_select",
+        "action_id": "novo_aprovador_select",
+        "placeholder": {"type": "plain_text", "text": "Selecione o usuário substituto"},
+    }
 
     # Data inicial padrão: hoje + 7 dias
     default_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
