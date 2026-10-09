@@ -3,6 +3,10 @@ import sys
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Precisa vir antes do import de services/, que lê o .env ao ser importado
+load_dotenv()
+
 from slack_sdk import WebClient
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -11,8 +15,6 @@ from services.ticket_service import executar_cobranca_pendencias
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cobranca_scheduler")
-
-load_dotenv()
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 

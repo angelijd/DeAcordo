@@ -5,6 +5,10 @@ import logging
 from datetime import datetime
 from typing import Optional
 from dotenv import load_dotenv
+
+# Precisa vir antes dos imports de config/ e services/, que leem o .env ao serem importados
+load_dotenv()
+
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
@@ -48,9 +52,6 @@ from utils.currency_words import format_real_input, parse_currency_str, valor_pa
 # Configura logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("slack_bot")
-
-# Carrega variáveis de ambiente
-load_dotenv()
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
