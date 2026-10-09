@@ -453,7 +453,7 @@ def modo_botoes_post() -> str:
     """
     POST_BOTOES no .env:
     - "unico" (padrão): um botão "Decidir minhas aprovações" abre uma janela só com as alçadas de quem clicou.
-    - "por_alcada": cada alçada pendente tem os próprios botões Aprovar e Reprovar no post.
+    - "por_alcada": bloco de aprovações no formato anterior, com Aprovar e Reprovar em cada alçada.
     """
     valor = (os.environ.get("POST_BOTOES") or "unico").strip().lower()
     return "por_alcada" if valor in ("por_alcada", "b") else "unico"
@@ -602,10 +602,17 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     if alertas:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(alertas)[:2900]}]})
 
+    if modo_botoes_post() == "por_alcada":
+        # Opção B: bloco de aprovações no formato anterior (seção + botões por alçada, botões da triagem)
+        blocks.extend(build_approval_blocks(ticket))
+        blocks.extend(_secoes_de_linhas(list(pv.get("excecoes_sem_alcada") or [])))
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "Contexto, CNPJ e INEP estão na thread."}]})
+        return blocks
+
     blocks.append({"type": "divider"})
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "*Aprovações*"}]})
 
-    por_alcada = pendente and modo_botoes_post() == "por_alcada"
+    por_alcada = False
     linhas_soltas: List[str] = []
     for key, apprv in approvals.items():
         linha = _linha_alcada(apprv, reprovado)

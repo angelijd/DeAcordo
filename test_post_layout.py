@@ -59,11 +59,14 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "⚠️ Exceção 2 · X" in txt
     assert action_ids(blocks) == ["btn_decidir_minhas", "triagem_menu"]
 
-    # Opção B: botões por alçada pendente
+    # Opção B: bloco de aprovações no formato anterior
     os.environ["POST_BOTOES"] = "por_alcada"
-    assert action_ids(build_thread_blocks(t)) == [
+    blocks_b = build_thread_blocks(t)
+    assert "📋 Status das Aprovações do Ticket" in textos(blocks_b)
+    assert action_ids(blocks_b) == [
         "btn_aprovar_comercial", "btn_reprovar_comercial",
-        "btn_aprovar_excecao_1_ops", "btn_reprovar_excecao_1_ops", "triagem_menu",
+        "btn_aprovar_excecao_1_ops", "btn_reprovar_excecao_1_ops",
+        "btn_triagem_substituicao", "btn_triagem_cobrar_ticket",
     ]
     os.environ.pop("POST_BOTOES")
 
