@@ -959,6 +959,22 @@ def handle_submission(ack, body, client):
     if link_simulador != "-" and not simulador_url:
         pessoas.append(f"📎 {link_simulador}")
 
+    # Resumo do card na thread: um item por linha, nesta ordem (alunado fica só na mensagem de dados da escola)
+    itens_resumo = []
+    if acv_limpo != "-":
+        itens_resumo.append(f"💵 *R$ {acv_limpo}*")
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        itens_resumo.append(f"📉 Reajuste *{reajuste_display}*")
+    if data.get("frente"):
+        itens_resumo.append(data["frente"])
+    if marcas_str:
+        itens_resumo.append(marcas_str)
+    itens_resumo.append(f"👤 {consultor_tag}  ·  🧭 Líder {lider_tag}")
+    if link_sf != "-":
+        itens_resumo.append(f"🔗 <{link_sf}|SalesForce>")
+    if link_simulador != "-" and not simulador_url:
+        itens_resumo.append(f"📎 {link_simulador}")
+
     extras = []
     if rede_val == "sim":
         extras.append(f"🏢 Rede: {data.get('nome_rede') or 'Sim'}")
@@ -985,6 +1001,7 @@ def handle_submission(ack, body, client):
         "excecoes_sem_alcada": excecoes_sem_alcada,
         "simulador_url": simulador_url,
         "cnpj": cnpj_formatado,
+        "itens": itens_resumo,
     }
 
     dados_escola = [f"CNPJ: {cnpj_formatado}", f"INEP: {inep_val}"]

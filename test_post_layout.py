@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory() as tmp:
     blocks = build_thread_blocks(t)
     txt = textos(blocks)
     assert blocks[0]["text"]["text"] == "⏳ Renovação · SEIS PRE-VESTIBULAR LTDA"
-    assert "*0 de 2 aprovadas* · faltam <@U_LIDER> e @Rafael Bae" in txt
+    assert "aprovadas" not in txt and "faltam" not in txt
     assert "⏳ Exceção 1 (Operações) · Kit Professor · @Rafael Bae" in txt
     assert "⚠️ Exceção 2 · X" in txt
     assert action_ids(blocks) == ["btn_decidir_minhas", "triagem_menu"]
@@ -90,7 +90,6 @@ with tempfile.TemporaryDirectory() as tmp:
     approve_step(t["key"], "comercial", "U_LIDER", "lider")
     res = reject_step(t["key"], "excecao_1_ops", "U_BAE", "bae", "outros", "c. Outros", "não")
     blocks = build_thread_blocks(res["ticket"])
-    assert "Concluída com aprovação parcial" in textos(blocks)
     assert action_ids(blocks) == []
     # No canal, 1 ou mais reprovações = Reprovado, mesmo com aprovações
     assert "❌ Reprovado" in textos(build_main_post_blocks(res["ticket"]))

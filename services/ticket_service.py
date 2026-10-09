@@ -647,8 +647,21 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": "header",
             "text": {"type": "plain_text", "text": f"{_emoji_status_ticket(ticket)} {pv['fluxo']} · {pv['escola']}"[:150], "emoji": True},
         })
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _linha_status(ticket)[:2900]}})
-    if pv.get("resumo") or pv.get("simulador_url"):
+    if pv.get("itens"):
+        # Um item por linha (valor, reajuste, marca, alunado, consultor e líder, SalesForce) + botão do Simulador
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(pv["itens"])[:2900]}})
+        if pv.get("simulador_url"):
+            blocks.append({
+                "type": "actions",
+                "block_id": "simulador_link",
+                "elements": [{
+                    "type": "button",
+                    "action_id": "btn_abrir_simulador",
+                    "text": {"type": "plain_text", "text": "📎 Simulador", "emoji": True},
+                    "url": pv["simulador_url"],
+                }],
+            })
+    elif pv.get("resumo") or pv.get("simulador_url"):
         resumo = {"type": "section", "text": {"type": "mrkdwn", "text": (pv.get("resumo") or " ")[:2900]}}
         if pv.get("simulador_url"):
             resumo["accessory"] = {
@@ -658,7 +671,7 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "url": pv["simulador_url"],
             }
         blocks.append(resumo)
-    if pv.get("pessoas"):
+    if pv.get("pessoas") and not pv.get("itens"):
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": pv["pessoas"][:2900]}]})
     alertas = list(pv.get("extras") or [])
     if alertas:
