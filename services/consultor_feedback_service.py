@@ -244,7 +244,7 @@ def send_consultor_rejection_dm(
     else:
         proximos_passos = (
             "As demais alçadas seguem analisando. "
-            "Quando todos decidirem, você recebe o resumo aqui e envia um novo formulário com as adequações."
+            "Quando todos decidirem, você recebe o resumo aqui."
         )
 
     blocks = [
