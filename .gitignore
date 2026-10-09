@@ -1,4 +1,4 @@
-﻿# Environment variables and secrets
+# Environment variables and secrets
 .env
 *.env
 
@@ -7,6 +7,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+
+# Credenciais da conta de serviço do Google (nunca commitar)
+google_credentials*.json
 
 # Local runtime state and logs
 tickets_state.json

@@ -2065,6 +2065,8 @@ def handle_msg_cobranca(message, say, client):
 # =========================================================================
 
 if __name__ == "__main__":
+    from services.sheets_service import is_enabled as sheets_enabled
+    logger.info("📊 Planilha do Google: " + ("ATIVA" if sheets_enabled() else "desligada (sem GOOGLE_SHEET_ID ou google_credentials.json)"))
     try:
         bg_scheduler = BackgroundScheduler()
         bg_scheduler.add_job(

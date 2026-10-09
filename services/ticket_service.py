@@ -212,7 +212,17 @@ def create_ticket(
     tickets[ticket_key] = ticket
     save_tickets(tickets)
     logger.info(f"Ticket {ticket_key} criado para '{escola}' com {len(approvals)} alçada(s).")
+    _sync_sheet(ticket_key)
     return ticket
+
+
+def _sync_sheet(ticket_key: str) -> None:
+    """Espelha o ticket na planilha do Google, se configurada. Nunca levanta erro."""
+    try:
+        from services.sheets_service import sincronizar_ticket
+        sincronizar_ticket(ticket_key)
+    except Exception as e:
+        logger.warning(f"Planilha não sincronizada para {ticket_key}: {e}")
 
 
 def get_ticket(ticket_key: str) -> Optional[Dict[str, Any]]:
@@ -296,6 +306,7 @@ def approve_step(
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
+    _sync_sheet(ticket_key)
 
     return {
         "success": True,
@@ -343,6 +354,7 @@ def reject_step(
         all_completed = _concluir_se_todas_decididas(ticket, now_str)
         tickets[ticket_key] = ticket
         save_tickets(tickets)
+        _sync_sheet(ticket_key)
         return {
             "success": True,
             "parcial": True,
@@ -363,6 +375,7 @@ def reject_step(
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
+    _sync_sheet(ticket_key)
 
     return {
         "success": True,
@@ -408,6 +421,7 @@ def substitute_approver(
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
+    _sync_sheet(ticket_key)
 
     return {
         "success": True,
@@ -960,10 +974,15 @@ def _excecao_status(excecao: Dict[str, Any], approvals: Dict[str, Any]) -> str:
     Uma exceção pode exigir Comercial, Operações, ambas ou nenhuma (regra "-").
     """
     relevantes = []
+    numero = excecao.get("numero")
+    # Tickets novos têm uma alçada por exceção (excecao_N_com / excecao_N_ops);
+    # os antigos usavam "comercial" e "operacoes" compartilhadas.
     if excecao.get("aprovador_comercial") and excecao["aprovador_comercial"] != "-":
-        relevantes.append(approvals.get("comercial", {}).get("status", "pending"))
+        apprv = approvals.get(f"excecao_{numero}_com") or approvals.get("comercial", {})
+        relevantes.append(apprv.get("status", "pending"))
     if excecao.get("aprovador_operacoes") and excecao["aprovador_operacoes"] != "-":
-        relevantes.append(approvals.get("operacoes", {}).get("status", "pending"))
+        apprv = approvals.get(f"excecao_{numero}_ops") or approvals.get("operacoes", {})
+        relevantes.append(apprv.get("status", "pending"))
 
     if not relevantes:
         return "sem_aprovacao_necessaria"
