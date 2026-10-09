@@ -1,6 +1,9 @@
 import re
+import logging
 import requests
 from typing import Dict, Any
+
+logger = logging.getLogger("receita_service")
 
 def consultar_cnpj(cnpj_raw: str) -> Dict[str, Any]:
     """
@@ -46,8 +49,10 @@ def consultar_cnpj(cnpj_raw: str) -> Dict[str, Any]:
                 "situacao": (data.get("descricao_situacao_cadastral") or "ATIVA").strip(),
                 "cnae_fiscal_descricao": data.get("cnae_fiscal_descricao") or "",
             }
-    except Exception:
-        pass
+        else:
+            logger.warning(f"BrasilAPI retornou status {resp.status_code} para CNPJ {cnpj_limpo}")
+    except Exception as e:
+        logger.warning(f"BrasilAPI falhou para CNPJ {cnpj_limpo}: {type(e).__name__}: {e}")
 
     # Provedor 2: ReceitaWS
     try:
@@ -71,8 +76,10 @@ def consultar_cnpj(cnpj_raw: str) -> Dict[str, Any]:
                     "situacao": (data.get("situacao") or "ATIVA").strip(),
                     "cnae_fiscal_descricao": data.get("atividade_principal", [{}])[0].get("text", ""),
                 }
-    except Exception:
-        pass
+        else:
+            logger.warning(f"ReceitaWS retornou status {resp.status_code} para CNPJ {cnpj_limpo}")
+    except Exception as e:
+        logger.warning(f"ReceitaWS falhou para CNPJ {cnpj_limpo}: {type(e).__name__}: {e}")
 
     # Provedor 3: CNPJ.ws pública
     try:
@@ -96,9 +103,12 @@ def consultar_cnpj(cnpj_raw: str) -> Dict[str, Any]:
                 "situacao": (estabelecimento.get("situacao_cadastral") or "ATIVA").strip(),
                 "cnae_fiscal_descricao": estabelecimento.get("atividade_principal", {}).get("descricao", ""),
             }
-    except Exception:
-        pass
+        else:
+            logger.warning(f"CNPJ.ws retornou status {resp.status_code} para CNPJ {cnpj_limpo}")
+    except Exception as e:
+        logger.warning(f"CNPJ.ws falhou para CNPJ {cnpj_limpo}: {type(e).__name__}: {e}")
 
+    logger.error(f"Todos os provedores de CNPJ falharam para {cnpj_limpo}. Veja os avisos acima para a causa real (timeout, SSL, DNS, etc).")
     return {
         "sucesso": False,
         "erro": "Não foi possível obter dados do CNPJ nos provedores públicos. Você pode preencher a Razão Social manualmente.",
