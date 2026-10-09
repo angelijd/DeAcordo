@@ -9,8 +9,17 @@ from typing import Dict, List, Optional
 # false = só cita o nome do N3 (sem marcar no Slack e sem DM); true = marca e manda a DM de aprovação.
 N3_MARCAR_APROVADORES = os.environ.get("N3_MARCAR_APROVADORES", "false").lower() == "true"
 
-# Nome usado em config/exceptions_rules.py para "o N3 da marca"; na Renovação vira o N3 da tabela abaixo.
+# Nome usado em config/exceptions_rules.py para as exceções da diretoria N3.
 N3_GENERICO = "N3 - Direto do Chalfun/Faleiros"
+
+# Modo alta demanda (true): essas exceções vão para o N3 de cada marca (tabela abaixo, só na Renovação).
+# Desligado (padrão): vão para os diretores Chalfun e Faleiros; qualquer um dos dois decide.
+MODO_ALTA_DEMANDA = os.environ.get("MODO_ALTA_DEMANDA", "false").lower() == "true"
+
+DIRETORES_N3 = [
+    {"nome": "Andre Chalfun", "slack_id": ""},
+    {"nome": "Lucas Faleiros", "slack_id": ""},
+]
 
 # Regra por segmento (Ultra High / Low) desligada até o formulário perguntar o segmento da escola.
 N3_USAR_SEGMENTO = False

@@ -144,6 +144,15 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             apprv["dm_msg_ts"] = str(msg_ts)
             logger.info(f"Card de aprovação via DM enviado com sucesso para {target_user_id} ({key}) no canal {dm_channel_id}")
 
+            # Alçada que qualquer um de vários aprovadores pode decidir (ex.: diretoria N3)
+            for outro_id in apprv.get("approver_ids") or []:
+                if outro_id != target_user_id:
+                    client.chat_postMessage(
+                        channel=outro_id,
+                        text=f"Aprovação solicitada para {escola} ({short_label})",
+                        blocks=blocks,
+                    )
+
         except Exception as e:
             logger.error(f"Erro ao enviar DM de aprovação para {target_user_id}: {e}")
 

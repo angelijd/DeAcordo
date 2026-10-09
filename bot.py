@@ -19,7 +19,7 @@ from config.approvers_map import APPROVERS_CONFIG, format_user_mention
 from config.exceptions_rules import EXCEPTIONS_RULES
 from config.triagem_config import is_user_triagem
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
-from config.n3_config import N3_GENERICO, N3_MARCAR_APROVADORES, resolver_aprovadores_n3
+from config.n3_config import DIRETORES_N3, MODO_ALTA_DEMANDA, N3_GENERICO, N3_MARCAR_APROVADORES, resolver_aprovadores_n3
 from services.receita_service import consultar_cnpj
 from services.inep_service import buscar_inep
 from services.ticket_service import (
@@ -120,6 +120,9 @@ def check_approval_authorization(apprv: dict, user_id: str) -> tuple[bool, bool]
     """
     expected_approver_id = apprv.get("approver_id") or ""
     allow_self = os.environ.get("TEST_ALLOW_SELF_APPROVAL", "false").lower() == "true"
+
+    if user_id in (apprv.get("approver_ids") or []):
+        return (True, False)
 
     if expected_approver_id and expected_approver_id.startswith(("U", "W")):
         return (user_id == expected_approver_id or allow_self, False)
@@ -714,6 +717,11 @@ def handle_submission(ack, body, client):
             lider_tag = format_mention(lider_id)
             com_tag = f"{lider_tag} (Líder Direto)"
             aprovadores_para_marcar.add(lider_tag)
+        elif aprov_com == N3_GENERICO:
+            com_tag = " ou ".join(
+                f"<@{d['slack_id']}>" if (N3_MARCAR_APROVADORES and d["slack_id"]) else f"@{d['nome']}"
+                for d in DIRETORES_N3
+            )
         elif aprov_com:
             com_tag = format_user_mention(aprov_com)
             aprovadores_para_marcar.add(com_tag)
@@ -873,8 +881,8 @@ def handle_submission(ack, body, client):
         aprovador_n3_tag = ", ".join(
             f"{n3['tag']} ({', '.join(n3['marcas'])})" for n3 in aprovadores_n3
         ) or "N3 não mapeado para esta Frente/Marca"
-        # Exceções cuja regra aponta o N3 genérico vão para o N3 de cada marca do pedido
-        if aprovadores_n3:
+        # Modo alta demanda: exceções da diretoria N3 vão para o N3 de cada marca do pedido
+        if MODO_ALTA_DEMANDA and aprovadores_n3:
             for item in excecoes_detalhes:
                 if item.get("aprov_com_nome") == N3_GENERICO:
                     item["aprov_com_tag"] = ", ".join(n3["tag"] for n3 in aprovadores_n3)
@@ -1008,7 +1016,20 @@ def handle_submission(ack, body, client):
         ):
             if not nome_regra:
                 continue
-            if nome_regra == N3_GENERICO and aprovadores_n3:
+            if nome_regra == N3_GENERICO and not (MODO_ALTA_DEMANDA and aprovadores_n3):
+                ids_diretores = [d["slack_id"] for d in DIRETORES_N3 if d["slack_id"]] if N3_MARCAR_APROVADORES else []
+                approvals_list.append({
+                    "key": f"excecao_{item['numero']}_com",
+                    "role_title": f"{titulo} (Diretoria N3)"[:140],
+                    "short_label": f"Exceção {item['numero']} (Diretoria)",
+                    "approver_id": ids_diretores[0] if ids_diretores else "",
+                    "approver_ids": ids_diretores,
+                    "approver_name": " ou ".join(d["nome"] for d in DIRETORES_N3),
+                    "scope_reason": f"Exceção {item['numero']}: {item['nome']}. Qualquer um dos diretores decide. Contexto: {item['contexto']}",
+                    "parcial": True,
+                })
+                continue
+            if nome_regra == N3_GENERICO:
                 for idx, n3 in enumerate(aprovadores_n3, start=1):
                     approvals_list.append({
                         "key": f"excecao_{item['numero']}_n3_{idx}",

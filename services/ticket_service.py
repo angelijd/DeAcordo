@@ -167,6 +167,7 @@ def create_ticket(
             "role_title": apprv["role_title"],
             "short_label": apprv["short_label"],
             "approver_id": eff_id,
+            "approver_ids": [] if is_sub else (apprv.get("approver_ids") or []),
             "approver_name": eff_name,
             "scope_reason": apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial.",
             # parcial=True: reprovar esta alçada (uma exceção) não encerra o pedido
@@ -409,6 +410,7 @@ def substitute_approver(
     original_id = approval.get("approver_id", "")
 
     approval["approver_id"] = new_approver_id
+    approval["approver_ids"] = []
     approval["approver_name"] = new_approver_name
     approval["sla_due_at"] = _compute_sla_due_at(new_approver_name)
     approval["is_substituted"] = True
