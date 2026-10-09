@@ -19,7 +19,7 @@ from config.approvers_map import APPROVERS_CONFIG, format_user_mention
 from config.exceptions_rules import EXCEPTIONS_RULES
 from config.triagem_config import is_user_triagem
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
-from config.n3_config import N3_MARCAR_APROVADORES, resolver_aprovadores_n3
+from config.n3_config import N3_GENERICO, N3_MARCAR_APROVADORES, resolver_aprovadores_n3
 from services.receita_service import consultar_cnpj
 from services.inep_service import buscar_inep
 from services.ticket_service import (
@@ -873,6 +873,11 @@ def handle_submission(ack, body, client):
         aprovador_n3_tag = ", ".join(
             f"{n3['tag']} ({', '.join(n3['marcas'])})" for n3 in aprovadores_n3
         ) or "N3 não mapeado para esta Frente/Marca"
+        # Exceções cuja regra aponta o N3 genérico vão para o N3 de cada marca do pedido
+        if aprovadores_n3:
+            for item in excecoes_detalhes:
+                if item.get("aprov_com_nome") == N3_GENERICO:
+                    item["aprov_com_tag"] = ", ".join(n3["tag"] for n3 in aprovadores_n3)
         raw_lines.extend([
             "Renovação",
             f"% Reajuste Líquido: {reajuste_display}",
@@ -1002,6 +1007,18 @@ def handle_submission(ack, body, client):
             ("operações", item.get("aprov_ops_nome"), "ops", f"⚙️ EXCEÇÃO {item['numero']} (Operações): {item['nome']}"),
         ):
             if not nome_regra:
+                continue
+            if nome_regra == N3_GENERICO and aprovadores_n3:
+                for idx, n3 in enumerate(aprovadores_n3, start=1):
+                    approvals_list.append({
+                        "key": f"excecao_{item['numero']}_n3_{idx}",
+                        "role_title": f"{titulo} (N3 {n3['nome']})"[:140],
+                        "short_label": f"Exceção {item['numero']} (N3 {n3['nome']})"[:60],
+                        "approver_id": n3["slack_id"] if N3_MARCAR_APROVADORES else "",
+                        "approver_name": n3["nome"],
+                        "scope_reason": f"Exceção {item['numero']}: {item['nome']}, como N3 de {', '.join(n3['marcas'])}. Contexto: {item['contexto']}",
+                        "parcial": True,
+                    })
                 continue
             approver_id, approver_name = _aprovador_excecao(nome_regra)
             approvals_list.append({

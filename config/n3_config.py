@@ -9,6 +9,9 @@ from typing import Dict, List, Optional
 # false = só cita o nome do N3 (sem marcar no Slack e sem DM); true = marca e manda a DM de aprovação.
 N3_MARCAR_APROVADORES = os.environ.get("N3_MARCAR_APROVADORES", "false").lower() == "true"
 
+# Nome usado em config/exceptions_rules.py para "o N3 da marca"; na Renovação vira o N3 da tabela abaixo.
+N3_GENERICO = "N3 - Direto do Chalfun/Faleiros"
+
 # Regra por segmento (Ultra High / Low) desligada até o formulário perguntar o segmento da escola.
 N3_USAR_SEGMENTO = False
 

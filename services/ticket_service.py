@@ -986,8 +986,13 @@ def _excecao_status(excecao: Dict[str, Any], approvals: Dict[str, Any]) -> str:
     # Tickets novos têm uma alçada por exceção (excecao_N_com / excecao_N_ops);
     # os antigos usavam "comercial" e "operacoes" compartilhadas.
     if excecao.get("aprovador_comercial") and excecao["aprovador_comercial"] != "-":
-        apprv = approvals.get(f"excecao_{numero}_com") or approvals.get("comercial", {})
-        relevantes.append(apprv.get("status", "pending"))
+        # excecao_N_com, ou excecao_N_n3_1, _n3_2... quando a regra aponta o N3 de cada marca
+        da_excecao = [
+            a for k, a in approvals.items()
+            if k == f"excecao_{numero}_com" or k.startswith(f"excecao_{numero}_n3_")
+        ]
+        for apprv in da_excecao or [approvals.get("comercial", {})]:
+            relevantes.append(apprv.get("status", "pending"))
     if excecao.get("aprovador_operacoes") and excecao["aprovador_operacoes"] != "-":
         apprv = approvals.get(f"excecao_{numero}_ops") or approvals.get("operacoes", {})
         relevantes.append(apprv.get("status", "pending"))
