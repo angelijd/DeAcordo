@@ -121,7 +121,7 @@ def send_consultor_progress_dm(
         blocks = [
             {
                 "type": "header",
-                "text": {"type": "plain_text", "text": "✅ Solicitação Concluída (aprovação parcial)" if parcial else "🎉 Solicitação 100% Aprovada!", "emoji": True}
+                "text": {"type": "plain_text", "text": "🟡 Solicitação Concluída (aprovação parcial)" if parcial else "🎉 Solicitação 100% Aprovada!", "emoji": True}
             }
         ]
         if is_mock:
@@ -153,7 +153,7 @@ def send_consultor_progress_dm(
                 ]
             }
         ])
-        msg_text = f"✅ Sua solicitação para {escola} foi concluída com aprovação parcial." if parcial else f"🎉 Parabéns! Sua solicitação para {escola} foi 100% aprovada!"
+        msg_text = f"🟡 Sua solicitação para {escola} foi concluída com aprovação parcial." if parcial else f"🎉 Parabéns! Sua solicitação para {escola} foi 100% aprovada!"
     else:
         # Notificação de Progresso Incremental
         last_apprv = approvals.get(last_approval_key, {})

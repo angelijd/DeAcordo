@@ -303,7 +303,7 @@ def mensagem_conclusao(ticket: Dict[str, Any]) -> str:
     reprovadas = excecoes_reprovadas(ticket)
     if reprovadas:
         return (
-            "✅ *SOLICITAÇÃO CONCLUÍDA COM APROVAÇÃO PARCIAL.* Todos os decisores deliberaram. "
+            "🟡 *SOLICITAÇÃO CONCLUÍDA COM APROVAÇÃO PARCIAL.* Todos os decisores deliberaram. "
             f"Fora do contrato (exceções reprovadas): {', '.join(reprovadas)}. "
             "O restante está liberado para emissão de contrato."
         )
