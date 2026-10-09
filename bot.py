@@ -115,6 +115,11 @@ def safe_views_update(client, view_id: str, modal: dict):
         raise e
 
 
+def _status_pt(status: Optional[str]) -> str:
+    """Status do ticket em português para mensagens aos usuários."""
+    return {"completed": "concluído", "rejected": "reprovado", "pending": "pendente"}.get(status or "", status or "-")
+
+
 def check_approval_authorization(apprv: dict, user_id: str) -> tuple[bool, bool]:
     """
     Verifica se `user_id` pode aprovar/reprovar a alçada `apprv`.
@@ -1669,7 +1674,7 @@ def handle_thread_reprovar_action(ack, body, client):
         client.chat_postEphemeral(
             channel=body["channel"]["id"],
             user=user_id,
-            text=f"⚠️ Este ticket já foi finalizado como *{ticket.get('status')}*."
+            text=f"⚠️ Este ticket já foi finalizado como *{_status_pt(ticket.get('status'))}*."
         )
         return
 
@@ -1949,7 +1954,7 @@ def _abrir_substituicao(client, user_id: str, user_name: str, channel_id: str, t
         client.chat_postEphemeral(
             channel=channel_id,
             user=user_id,
-            text=f"⚠️ Este ticket já se encontra finalizado como *{ticket.get('status')}*. A substituição só é permitida em tickets pendentes."
+            text=f"⚠️ Este ticket já se encontra finalizado como *{_status_pt(ticket.get('status'))}*. A substituição só é permitida em tickets pendentes."
         )
         return
 
