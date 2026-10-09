@@ -868,8 +868,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "text": (
                     f"🚨 *SOLICITAÇÃO REPROVADA ({reprov_at})*\n"
                     f"*Ajustes pedidos:*\n{linhas}\n\n"
-                    f"⚠️ *Status:* *Ticket encerrado.* Para dar andamento na negociação, "
-                    f"o consultor deve realizar as adequações necessárias e submeter um novo formulário."
+                    f"⚠️ *Status:* *Ticket encerrado.*"
                 )[:2900]
             }
         })
