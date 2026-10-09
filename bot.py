@@ -366,6 +366,8 @@ def handle_cnpj_input(ack, body, client):
             inep_res = buscar_inep(info.get("nome_fantasia", ""), info.get("razao_social", ""))
             if inep_res and inep_res.get("codigo_inep"):
                 saved_values["inep"] = inep_res["codigo_inep"]
+        else:
+            cnpj_info = {"cnpj": digitos, **info}
 
     updated_modal = build_aprovacoes_modal(
         current_user_id=current_user_id,
@@ -408,6 +410,8 @@ def handle_buscar_cnpj_button(ack, body, client):
             inep_res = buscar_inep(cnpj_info.get("nome_fantasia", ""), cnpj_info.get("razao_social", ""))
             if inep_res and inep_res.get("codigo_inep"):
                 saved_values["inep"] = inep_res["codigo_inep"]
+        else:
+            cnpj_info = {"cnpj": digitos, **cnpj_info}
 
     updated_modal = build_aprovacoes_modal(
         current_user_id=current_user_id,

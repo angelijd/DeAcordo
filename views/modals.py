@@ -372,6 +372,8 @@ def build_aprovacoes_modal(
         tipo_str = cnpj_info.get('tipo') or 'MATRIZ'
         detalhes = f"✅ Encontrado: {cnpj_info.get('municipio')}/{cnpj_info.get('uf')} | {tipo_str} | Status: {cnpj_info.get('situacao', 'ATIVA')}"
         razao_hint_text = detalhes
+    elif cnpj_info.get("erro"):
+        razao_hint_text = f"⚠️ {cnpj_info['erro']}"
 
     blocks.append({
         "type": "input",
