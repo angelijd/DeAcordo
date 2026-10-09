@@ -132,7 +132,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             })
 
             # Envia diretamente para o usuário
-            msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
+            msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                 channel=target_user_id,
                 text=f"Aprovação solicitada para {escola} ({short_label})",
                 blocks=blocks,
@@ -147,7 +147,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             # Alçada que qualquer um de vários aprovadores pode decidir (ex.: diretoria N3)
             for outro_id in apprv.get("approver_ids") or []:
                 if outro_id != target_user_id:
-                    client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
+                    client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                         channel=outro_id,
                         text=f"Aprovação solicitada para {escola} ({short_label})",
                         blocks=blocks,
@@ -290,7 +290,7 @@ def send_dm_substitute_card(
             ]
         })
 
-        msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
+        msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=target_user_id,
             text=f"Aprovação solicitada como substituto para {escola} ({short_label})",
             blocks=blocks,

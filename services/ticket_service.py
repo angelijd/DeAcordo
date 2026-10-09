@@ -1117,7 +1117,7 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
         if target_id:
             try:
                 test_badge = f"🧪 *[MODO DE TESTE]* Cobrança para: *@{p.get('approver_name')}*\n" if is_mock else ""
-                client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
+                client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                     channel=target_id,
                     text=f"🔔 Lembrete de Pendência: {escola} ({p.get('short_label')})",
                     blocks=[
