@@ -137,7 +137,7 @@ def send_consultor_progress_dm(
                     "text": (
                         abertura
                         + f"*Pipeline de Aprovação Concluído ({approved_count}/{total_count}):*\n{stepper_text}\n\n"
-                        + ("📄 *Próximo Passo:* O ticket foi concluído e o que foi aprovado está liberado para emissão e assinatura de contrato."
+                        + ("📄 *Próximo Passo:* Você pode acessar as deliberações na thread."
                            if parcial else
                            "📄 *Próximo Passo:* O ticket foi formalmente concluído no canal de negociações e a proposta está 100% liberada para emissão e assinatura de contrato.")
                     )
