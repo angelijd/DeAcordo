@@ -169,6 +169,8 @@ def create_ticket(
             "approver_id": eff_id,
             "approver_name": eff_name,
             "scope_reason": apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial.",
+            # parcial=True: reprovar esta alçada (uma exceção) não encerra o pedido
+            "parcial": bool(apprv.get("parcial")),
             "status": "pending",  # pending | approved | rejected
             "approved_by_id": None,
             "approved_by_name": None,
@@ -225,6 +227,42 @@ def update_ticket_card_ts(ticket_key: str, card_msg_ts: str):
         save_tickets(tickets)
 
 
+def _concluir_se_todas_decididas(ticket: Dict[str, Any], now_str: str) -> bool:
+    """Conclui o ticket quando toda alçada foi aprovada ou é uma exceção já reprovada."""
+    approvals = ticket["approvals"].values()
+    decididas = all(
+        a["status"] == "approved" or (a.get("parcial") and a["status"] == "rejected")
+        for a in approvals
+    )
+    if decididas:
+        ticket["status"] = "completed"
+        ticket["completed_at"] = now_str
+        ticket["resultado"] = "parcial" if any(a["status"] == "rejected" for a in approvals) else "total"
+    return decididas
+
+
+def excecoes_reprovadas(ticket: Dict[str, Any]) -> List[str]:
+    return [
+        a.get("short_label") or a.get("role_title", "Exceção")
+        for a in ticket.get("approvals", {}).values()
+        if a.get("parcial") and a.get("status") == "rejected"
+    ]
+
+
+def mensagem_conclusao(ticket: Dict[str, Any]) -> str:
+    reprovadas = excecoes_reprovadas(ticket)
+    if reprovadas:
+        return (
+            "✅ *SOLICITAÇÃO CONCLUÍDA COM APROVAÇÃO PARCIAL.* Todos os decisores deliberaram. "
+            f"Fora do contrato (exceções reprovadas): {', '.join(reprovadas)}. "
+            "O restante está liberado para emissão de contrato."
+        )
+    return (
+        "🎉 *SOLICITAÇÃO 100% APROVADA E CONCLUÍDA!* Todos os decisores de alçada deliberaram. "
+        "Ticket formalmente encerrado e liberado para emissão de contrato."
+    )
+
+
 def approve_step(
     ticket_key: str,
     approval_key: str,
@@ -243,7 +281,7 @@ def approve_step(
     if not approval:
         return {"success": False, "error": "Alçada de aprovação não encontrada."}
 
-    if approval["status"] == "approved":
+    if approval["status"] in ("approved", "rejected"):
         return {"success": True, "already_approved": True, "ticket": ticket}
 
     agora_br = datetime.now(BR_TZ)
@@ -254,11 +292,7 @@ def approve_step(
     approval["approved_at"] = now_str
     approval["sla_cumprido"] = _sla_cumprido_em(approval, agora_br)
 
-    # Verifica se todas as alçadas foram aprovadas
-    all_completed = all(a["status"] == "approved" for a in ticket["approvals"].values())
-    if all_completed:
-        ticket["status"] = "completed"
-        ticket["completed_at"] = now_str
+    all_completed = _concluir_se_todas_decididas(ticket, now_str)
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
@@ -303,6 +337,19 @@ def reject_step(
     approval["reason_key"] = reason_key
     approval["reason_label"] = reason_label
     approval["details"] = details
+
+    if approval.get("parcial"):
+        # Exceção reprovada: sai do pedido, o resto segue
+        all_completed = _concluir_se_todas_decididas(ticket, now_str)
+        tickets[ticket_key] = ticket
+        save_tickets(tickets)
+        return {
+            "success": True,
+            "parcial": True,
+            "all_completed": all_completed,
+            "ticket": ticket,
+            "approval": approval,
+        }
 
     # Marca todo o ticket como reprovado e encerrado
     ticket["status"] = "rejected"
@@ -518,10 +565,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     if all_approved:
         blocks.append({
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "🎉 *TODAS AS ALÇADAS FORAM APROVADAS! Solicitação encerrada e liberada para emissão de contrato.*"
-            }
+            "text": {"type": "mrkdwn", "text": mensagem_conclusao(ticket)}
         })
     elif not is_rejected:
         # Ações administrativas e de segurança apenas se o ticket ainda estiver pendente

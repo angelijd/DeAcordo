@@ -11,7 +11,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config.approvers_map import format_user_mention
+from config.approvers_map import APPROVERS_CONFIG, format_user_mention
 from config.exceptions_rules import EXCEPTIONS_RULES
 from config.triagem_config import is_user_triagem
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
@@ -30,6 +30,7 @@ from services.ticket_service import (
     executar_cobranca_pendencias,
     cobrar_pendencias_de_ticket,
     get_pending_tickets,
+    mensagem_conclusao,
 )
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
@@ -731,6 +732,8 @@ def handle_submission(ack, body, client):
             "aprov_com_tag": com_tag,
             "regra_ops": rule.get("ops", "-"),
             "aprov_ops_tag": ops_tag,
+            "aprov_com_nome": aprov_com,
+            "aprov_ops_nome": aprov_ops,
         })
 
     # Versão estruturada das exceções, para salvar no ticket (fora do texto livre)
@@ -979,19 +982,30 @@ def handle_submission(ack, body, client):
         "scope_reason": "Validação de liderança direta sobre as condições comerciais e proposta para o Ciclo CE 2027.",
     })
 
-    # Alçada Operações (se alguma exceção exigir)
-    ops_item = next((item for item in excecoes_detalhes if item.get("regra_ops") != "-" and item.get("aprov_ops_tag") != "-"), None)
-    if ops_item:
-        ops_name = ops_item["aprov_ops_tag"].replace("@", "").strip()
-        exc_nome = ops_item.get("nome", "Exceção Operacional")
-        approvals_list.append({
-            "key": "operacoes",
-            "role_title": "⚙️ APROVAÇÃO OPERAÇÕES",
-            "short_label": "Operações",
-            "approver_id": "",
-            "approver_name": ops_name,
-            "scope_reason": f"Exceção operacional identificada: {exc_nome} (Regra de Operações exigida).",
-        })
+    # Uma alçada por exceção (e por aprovador dela): reprovar uma exceção não encerra o pedido
+    def _aprovador_excecao(nome_regra):
+        if nome_regra == "LIDER_DIRETO":
+            return (lider_id if (lider_id and lider_id.startswith(("U", "W"))) else ""), lider_display
+        slack_id = (APPROVERS_CONFIG.get(nome_regra) or {}).get("slack_id") or ""
+        return slack_id, nome_regra
+
+    for item in excecoes_detalhes:
+        for papel, nome_regra, sufixo, titulo in (
+            ("comercial", item.get("aprov_com_nome"), "com", f"🔹 EXCEÇÃO {item['numero']}: {item['nome']}"),
+            ("operações", item.get("aprov_ops_nome"), "ops", f"⚙️ EXCEÇÃO {item['numero']} (Operações): {item['nome']}"),
+        ):
+            if not nome_regra:
+                continue
+            approver_id, approver_name = _aprovador_excecao(nome_regra)
+            approvals_list.append({
+                "key": f"excecao_{item['numero']}_{sufixo}",
+                "role_title": titulo[:140],
+                "short_label": f"Exceção {item['numero']}" + (" (Ops)" if sufixo == "ops" else ""),
+                "approver_id": approver_id,
+                "approver_name": approver_name,
+                "scope_reason": f"Exceção {item['numero']} ({papel}): {item['nome']}. Contexto: {item['contexto']}",
+                "parcial": True,
+            })
 
     if tipo_fluxo == FLUXO_RENOVACAO:
         # Alçadas específicas da Renovação: Aprovador do Simulador e Aprovador N3
@@ -1314,7 +1328,7 @@ def handle_dm_approval_action(ack, body, client):
                 client.chat_postMessage(
                     channel=ticket["channel_id"],
                     thread_ts=ticket["thread_ts"],
-                    text="🎉 *SOLICITAÇÃO 100% APROVADA E CONCLUÍDA!* Todos os decisores de alçada deliberaram. Ticket formalmente encerrado e liberado para emissão de contrato."
+                    text=mensagem_conclusao(updated_ticket)
                 )
                 client.reactions_add(
                     channel=ticket["channel_id"],
@@ -1438,7 +1452,7 @@ def handle_thread_approval_action(ack, body, client):
         client.chat_postMessage(
             channel=ticket["channel_id"],
             thread_ts=ticket["thread_ts"],
-            text="🎉 *SOLICITAÇÃO 100% APROVADA E CONCLUÍDA!* Todos os decisores de alçada deliberaram. Ticket formalmente encerrado e liberado para emissão de contrato."
+            text=mensagem_conclusao(updated_ticket)
         )
         try:
             client.reactions_add(
@@ -1593,14 +1607,24 @@ def handle_view_reprovar_ticket(ack, body, client, view):
     consultor_tag = f"<@{consultor_id}>" if consultor_id and consultor_id.startswith(("U", "W")) else f"@{metadata.get('consultor_name', 'Consultor')}"
     detalhes_txt = f"\n• *Justificativa / Apontamentos:* _{detalhes.strip()}_" if detalhes.strip() else ""
 
-    alert_msg = (
-        f"🚨 *SOLICITAÇÃO COMERCIAL REPROVADA*\n"
-        f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
-        f"• *Escola:* *{escola}*\n"
-        f"• *Alçada:* *{role_title}* deliberada por <@{user_id}> em {now_str}\n"
-        f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n"
-        f"⛔ *Status:* *Ticket encerrado.* Para nova análise ou correção, submeta uma nova solicitação via `/solicitacao`."
-    )
+    is_parcial = bool(res.get("parcial"))
+    if is_parcial:
+        alert_msg = (
+            f"❌ *EXCEÇÃO REPROVADA*\n"
+            f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
+            f"• *{role_title}* reprovada por <@{user_id}> em {now_str}\n"
+            f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n"
+            f"➡️ Essa exceção sai do pedido. As demais alçadas seguem normalmente."
+        )
+    else:
+        alert_msg = (
+            f"🚨 *SOLICITAÇÃO COMERCIAL REPROVADA*\n"
+            f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
+            f"• *Escola:* *{escola}*\n"
+            f"• *Alçada:* *{role_title}* deliberada por <@{user_id}> em {now_str}\n"
+            f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n"
+            f"⛔ *Status:* *Ticket encerrado.* Para nova análise ou correção, submeta uma nova solicitação via `/solicitacao`."
+        )
 
     client.chat_postMessage(
         channel=channel_id,
@@ -1608,15 +1632,21 @@ def handle_view_reprovar_ticket(ack, body, client, view):
         text=alert_msg
     )
 
-    # 2. Adiciona reação de :x: na mensagem inicial da thread
-    try:
-        client.reactions_add(
+    if is_parcial and res.get("all_completed"):
+        client.chat_postMessage(
             channel=channel_id,
-            timestamp=updated_ticket["thread_ts"],
-            name="x"
+            thread_ts=updated_ticket["thread_ts"],
+            text=mensagem_conclusao(updated_ticket),
         )
+
+    # 2. Reação na mensagem inicial: :x: só quando o pedido inteiro foi reprovado
+    try:
+        if not is_parcial:
+            client.reactions_add(channel=channel_id, timestamp=updated_ticket["thread_ts"], name="x")
+        elif res.get("all_completed"):
+            client.reactions_add(channel=channel_id, timestamp=updated_ticket["thread_ts"], name="white_check_mark")
     except Exception as e:
-        logger.warning(f"Reação :x: na thread: {e}")
+        logger.warning(f"Reação na thread: {e}")
 
     # 3. Atualiza o card de status na thread
     card_msg_ts = updated_ticket.get("card_msg_ts")
@@ -1695,6 +1725,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             "rejected_by_name": user_name,
             "reason_label": reason_label,
             "details": detalhes.strip(),
+            "parcial": is_parcial,
         }
         send_consultor_rejection_dm(
             client=client,
