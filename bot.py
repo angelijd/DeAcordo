@@ -1020,7 +1020,7 @@ def handle_submission(ack, body, client):
         "short_label": "Comercial",
         "approver_id": lider_id if (lider_id and lider_id.startswith(("U", "W"))) else "",
         "approver_name": lider_display,
-        "scope_reason": "Validação de liderança direta sobre as condições comerciais e proposta para o Ciclo CE 2027.",
+        "scope_reason": "",
     })
 
     # Uma alçada por exceção (e por aprovador dela): reprovar uma exceção não encerra o pedido
@@ -1046,7 +1046,7 @@ def handle_submission(ack, body, client):
                     "approver_id": ids_diretores[0] if ids_diretores else "",
                     "approver_ids": ids_diretores,
                     "approver_name": " ou ".join(d["nome"] for d in DIRETORES_N3),
-                    "scope_reason": f"Exceção {item['numero']}: {item['nome']}. Qualquer um dos diretores decide. Contexto: {item['contexto']}",
+                    "scope_reason": f"Exceção {item['numero']}: {item['nome']}. Contexto: {item['contexto']}",
                     "parcial": True,
                 })
                 continue
@@ -1082,7 +1082,7 @@ def handle_submission(ack, body, client):
             "short_label": "Aprovador Simulador",
             "approver_id": data.get("aprovador_simulador") if (data.get("aprovador_simulador") or "").startswith(("U", "W")) else "",
             "approver_name": aprovador_simulador_display,
-            "scope_reason": "Aprovador indicado no simulador de renovação, conforme preenchido no formulário.",
+            "scope_reason": "",
         })
         for idx, n3 in enumerate(aprovadores_n3, start=1):
             approvals_list.append({

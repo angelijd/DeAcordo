@@ -170,7 +170,7 @@ def create_ticket(
             "approver_id": eff_id,
             "approver_ids": [] if is_sub else (apprv.get("approver_ids") or []),
             "approver_name": eff_name,
-            "scope_reason": apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial.",
+            "scope_reason": apprv.get("scope_reason") or "",
             "checklist_label": apprv.get("checklist_label") or "",
             # parcial=True: reprovar esta alçada (uma exceção) não encerra o pedido
             "parcial": bool(apprv.get("parcial")),
@@ -788,7 +788,7 @@ def build_decidir_modal(ticket: Dict[str, Any], user_id: str, autorizado) -> Dic
     for apprv in minhas:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{apprv.get('checklist_label') or apprv.get('short_label')}*\n{apprv.get('scope_reason', '')}"[:2900]},
+            "text": {"type": "mrkdwn", "text": (f"*{apprv.get('checklist_label') or apprv.get('short_label')}*" + (f"\n{apprv['scope_reason']}" if apprv.get("scope_reason") else ""))[:2900]},
         })
         blocks.append({
             "type": "actions",

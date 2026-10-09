@@ -39,7 +39,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
         approver_name = apprv.get("approver_name", "Aprovador")
         role_title = apprv.get("role_title", "Aprovação")
         short_label = apprv.get("short_label", "Aprovação")
-        scope_reason = apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial."
+        scope_reason = apprv.get("scope_reason") or ""
 
         is_mock_target = False
         target_user_id = None
@@ -90,13 +90,14 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             })
 
             # Bloco em destaque com a razão específica da deliberação
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*📌 O que requer sua aprovação ({short_label}):*\n> {scope_reason}"
-                }
-            })
+            if scope_reason:
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*📌 O que requer sua aprovação ({short_label}):*\n> {scope_reason}"
+                    }
+                })
 
             # Botões de ação em 1 clique
             blocks.append({
@@ -190,7 +191,7 @@ def send_dm_substitute_card(
     orig_name = apprv.get("original_approver_name", "Titular")
     until_date = apprv.get("substitute_until", "")
     sub_reason = apprv.get("substitution_reason", "Ausência temporária")
-    scope_reason = apprv.get("scope_reason") or "Aprovação necessária conforme governança do ciclo comercial."
+    scope_reason = apprv.get("scope_reason") or ""
 
     target_user_id = None
     is_mock_target = False
@@ -249,13 +250,14 @@ def send_dm_substitute_card(
         })
 
         # Citação com escopo de aprovação
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*📌 O que requer sua aprovação (em substituição a @{orig_name}):*\n> {scope_reason}"
-            }
-        })
+        if scope_reason:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*📌 O que requer sua aprovação (em substituição a @{orig_name}):*\n> {scope_reason}"
+                }
+            })
 
         # Botões de deliberação
         blocks.append({
