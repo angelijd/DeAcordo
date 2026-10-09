@@ -39,6 +39,7 @@ from services.ticket_service import (
     build_decidir_modal,
     alcadas_do_usuario,
     reacao_conclusao,
+    build_channel_notice_blocks,
 )
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
@@ -983,6 +984,7 @@ def handle_submission(ack, body, client):
         "extras": extras,
         "excecoes_sem_alcada": excecoes_sem_alcada,
         "simulador_url": simulador_url,
+        "cnpj": cnpj_formatado,
     }
 
     dados_escola = [f"CNPJ: {cnpj_formatado}", f"INEP: {inep_val}"]
@@ -1178,28 +1180,18 @@ def handle_submission(ack, body, client):
             for apprv in approvals_list
         }
     }
-    initial_blocks = build_thread_blocks(temp_ticket)
-
     tipo_fluxo_label_curto = "Crescimento" if tipo_fluxo == FLUXO_CRESCIMENTO else "Renovação"
+    texto_notificacao = f"Nova negociação [{tipo_fluxo_label_curto}]: {data.get('razao_social') or 'Escola'}"
+
+    # 1. Canal: só a notificação (tipo, escola, CNPJ e status). Botões e detalhes ficam na thread.
     resp = client.chat_postMessage(
         channel=channel_id,
-        text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {data.get('razao_social')}",
-        blocks=initial_blocks,
+        text=texto_notificacao,
+        blocks=build_channel_notice_blocks(temp_ticket),
         unfurl_links=False,
         unfurl_media=False,
     )
     thread_ts = resp["ts"]
-
-    try:
-        client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text=detalhes_thread,
-            unfurl_links=False,
-            unfurl_media=False,
-        )
-    except Exception as e:
-        logger.warning(f"Erro ao postar os detalhes na thread: {e}")
 
     # Obtém permalink
     thread_permalink = None
@@ -1222,19 +1214,34 @@ def handle_submission(ack, body, client):
         thread_permalink=thread_permalink,
         extra_data=extra_ticket_data,
     )
-    update_ticket_card_ts(ticket["key"], thread_ts)
 
-    # Atualiza a mensagem única postada com os valores e botões reais vinculados à chave do ticket
-    real_blocks = build_thread_blocks(ticket)
+    # 2. Thread: card de aprovação (status, resumo, checklist e botões), atualizado a cada decisão
+    ticket["card_na_thread"] = True
     try:
-        client.chat_update(
+        card_resp = client.chat_postMessage(
             channel=channel_id,
-            ts=thread_ts,
-            blocks=real_blocks,
-            text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {ticket['escola']}"
+            thread_ts=thread_ts,
+            text=f"Aprovações: {ticket['escola']}",
+            blocks=build_thread_blocks(ticket),
+            unfurl_links=False,
+            unfurl_media=False,
+        )
+        ticket["card_msg_ts"] = card_resp["ts"]
+        update_ticket_card_ts(ticket["key"], card_resp["ts"])
+    except Exception as e:
+        logger.error(f"Erro ao postar o card de aprovação na thread: {e}")
+
+    # 3. Thread: dados da escola e contexto de cada exceção
+    try:
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=detalhes_thread,
+            unfurl_links=False,
+            unfurl_media=False,
         )
     except Exception as e:
-        logger.warning(f"Erro ao atualizar valores dos botões no post inicial: {e}")
+        logger.warning(f"Erro ao postar os detalhes na thread: {e}")
 
     # Envia os cards executivos individuais na DM privada de cada aprovador
     try:

@@ -4,6 +4,7 @@ import tempfile
 import services.ticket_service as ts
 from services.ticket_service import (
     create_ticket, approve_step, reject_step, build_thread_blocks, build_decidir_modal, rotulo_checklist,
+    build_main_post_blocks, update_ticket_card_ts, get_ticket,
 )
 
 
@@ -75,13 +76,24 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "Comercial (Líder)" in textos(modal["blocks"])
     assert "Kit Professor" not in textos(modal["blocks"])
 
+    # Card na thread: o canal mostra só tipo, escola, CNPJ e status, sem botões
+    update_ticket_card_ts(t["key"], "1.2")
+    t = get_ticket(t["key"])
+    t["extra_data"]["post_view"]["cnpj"] = "17407203000108"
+    canal = build_main_post_blocks(t)
+    assert textos(canal) == "🔄 *Renovação · SEIS PRE-VESTIBULAR LTDA*\nCNPJ 17.407.203/0001-08  ·  *⏳ Pendente*"
+    assert action_ids(canal) == []
+    assert build_thread_blocks(t)[0]["type"] != "header"
+    assert "btn_decidir_minhas" in action_ids(build_thread_blocks(t))
+
     # Depois de aprovar e reprovar a exceção: concluída com aprovação parcial, sem botões
     approve_step(t["key"], "comercial", "U_LIDER", "lider")
     res = reject_step(t["key"], "excecao_1_ops", "U_BAE", "bae", "outros", "c. Outros", "não")
     blocks = build_thread_blocks(res["ticket"])
-    assert blocks[0]["text"]["text"].startswith("🟡 ")
     assert "Concluída com aprovação parcial" in textos(blocks)
     assert action_ids(blocks) == []
+    # No canal, 1 ou mais reprovações = Reprovado, mesmo com aprovações
+    assert "❌ Reprovado" in textos(build_main_post_blocks(res["ticket"]))
 
     # Post antigo (sem o layout novo) continua renderizando
     legado = dict(res["ticket"], extra_data={"post_view": {"titulo": "T", "subtitulo": "S", "campos": [("A", "1")]}})

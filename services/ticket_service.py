@@ -592,6 +592,46 @@ def _menu_triagem(ticket_key: str) -> Dict[str, Any]:
     }
 
 
+
+def _card_na_thread(ticket: Dict[str, Any]) -> bool:
+    """True quando o card de aprovação é uma resposta na thread (não a mensagem principal do canal)."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    card = ticket.get("card_msg_ts")
+    return bool(pv.get("fluxo")) and (ticket.get("card_na_thread") or bool(card and card != ticket.get("thread_ts")))
+
+
+def status_canal(ticket: Dict[str, Any]) -> str:
+    """Status da notificação no canal: 1 ou mais reprovações = Reprovado, mesmo com aprovações."""
+    if reprovacoes(ticket):
+        return "❌ Reprovado"
+    if ticket.get("status") == "completed":
+        return "✅ Aprovado"
+    return "⏳ Pendente"
+
+
+def build_channel_notice_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Notificação de nova negociação no canal: tipo, escola, CNPJ e status. Nada de botões."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    fluxo = pv.get("fluxo") or "Solicitação"
+    emoji_fluxo = "🔄" if fluxo == "Renovação" else "🌱"
+    escola = pv.get("escola") or ticket.get("escola") or "Escola"
+    cnpj = str(pv.get("cnpj") or ticket.get("cnpj") or (ticket.get("extra_data") or {}).get("cnpj") or "-")
+    digitos = re.sub(r"\D", "", cnpj)
+    if len(digitos) == 14:
+        cnpj = f"{digitos[:2]}.{digitos[2:5]}.{digitos[5:8]}/{digitos[8:12]}-{digitos[12:]}"
+    return [{
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"{emoji_fluxo} *{fluxo} · {escola}*\nCNPJ {cnpj}  ·  *{status_canal(ticket)}*"[:2900],
+        },
+    }]
+
+
+def _rodape_card(na_thread: bool) -> str:
+    return "📝 Contexto e dados da escola na próxima mensagem." if na_thread else "Contexto, CNPJ e INEP estão na thread."
+
+
 def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Post da solicitação no canal: título com status, resumo numa linha e checklist de alçadas."""
     pv = ticket["extra_data"]["post_view"]
@@ -600,13 +640,14 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     pendente = status not in ("completed", "rejected")
     approvals = ticket.get("approvals", {})
 
-    blocks: List[Dict[str, Any]] = [
-        {
+    na_thread = _card_na_thread(ticket)
+    blocks: List[Dict[str, Any]] = []
+    if not na_thread:
+        blocks.append({
             "type": "header",
             "text": {"type": "plain_text", "text": f"{_emoji_status_ticket(ticket)} {pv['fluxo']} · {pv['escola']}"[:150], "emoji": True},
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": _linha_status(ticket)[:2900]}},
-    ]
+        })
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _linha_status(ticket)[:2900]}})
     if pv.get("resumo") or pv.get("simulador_url"):
         resumo = {"type": "section", "text": {"type": "mrkdwn", "text": (pv.get("resumo") or " ")[:2900]}}
         if pv.get("simulador_url"):
@@ -627,7 +668,7 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Opção B: bloco de aprovações no formato anterior (seção + botões por alçada, botões da triagem)
         blocks.extend(build_approval_blocks(ticket))
         blocks.extend(_secoes_de_linhas(list(pv.get("excecoes_sem_alcada") or [])))
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "Contexto, CNPJ e INEP estão na thread."}]})
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _rodape_card(na_thread)}]})
         return blocks
 
     blocks.append({"type": "divider"})
@@ -669,7 +710,7 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         elementos.append(_menu_triagem(ticket["key"]))
         blocks.append({"type": "actions", "block_id": "post_actions", "elements": elementos})
 
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "Contexto, CNPJ e INEP estão na thread."}]})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _rodape_card(na_thread)}]})
     return blocks
 
 
@@ -979,8 +1020,11 @@ def build_thread_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def build_main_post_blocks(ticket: Dict[str, Any], permalink: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    Retorna a mesma estrutura unificada para que tudo viva em 1 mensagem só.
+    Mensagem principal no canal. Tickets novos (card de aprovação dentro da thread): só a notificação
+    com tipo, escola, CNPJ e status. Tickets antigos (card na própria mensagem principal): tudo junto.
     """
+    if _card_na_thread(ticket):
+        return build_channel_notice_blocks(ticket)
     return build_thread_blocks(ticket)
 
 
