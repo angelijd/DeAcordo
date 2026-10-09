@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 from config.approvers_map import format_user_mention
 from config.exceptions_rules import EXCEPTIONS_RULES
 from config.triagem_config import is_user_triagem
+from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
 from services.receita_service import consultar_cnpj
 from services.inep_service import buscar_inep
 from services.ticket_service import (
@@ -144,6 +145,7 @@ def handle_slash_command(ack, body, client):
         is_rede=False,
         is_divida=False,
         has_file_input=has_files_scope,
+        tipo_fluxo=resolver_tipo_fluxo(channel_id),
     )
     safe_views_open(client, trigger_id, modal)
 
@@ -156,6 +158,8 @@ def handle_global_shortcut(ack, body, client):
     channel_id = DEFAULT_CHANNEL_ID
     current_user_id = body["user"]["id"]
 
+    # O atalho global não informa o canal de origem - o tipo de fluxo não
+    # pode ser detectado aqui, então o modal sempre pede a escolha manual.
     has_files_scope = check_files_read_scope(client)
     modal = build_aprovacoes_modal(
         current_user_id=current_user_id,
@@ -164,6 +168,7 @@ def handle_global_shortcut(ack, body, client):
         is_rede=False,
         is_divida=False,
         has_file_input=has_files_scope,
+        tipo_fluxo=None,
     )
     safe_views_open(client, trigger_id, modal)
 
@@ -185,6 +190,7 @@ def handle_channel_button(ack, body, client):
         is_rede=False,
         is_divida=False,
         has_file_input=has_files_scope,
+        tipo_fluxo=resolver_tipo_fluxo(channel_id),
     )
     safe_views_open(client, trigger_id, modal)
 
@@ -283,6 +289,7 @@ def handle_tem_divida_select(ack, body, client):
         saved_values=saved_values,
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
+        tipo_fluxo=metadata.get("tipo_fluxo"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -318,6 +325,7 @@ def handle_rede_select(ack, body, client):
         saved_values=saved_values,
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
+        tipo_fluxo=metadata.get("tipo_fluxo"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -368,6 +376,7 @@ def handle_cnpj_input(ack, body, client):
         saved_values=saved_values,
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
+        tipo_fluxo=metadata.get("tipo_fluxo"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -409,6 +418,7 @@ def handle_buscar_cnpj_button(ack, body, client):
         saved_values=saved_values,
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
+        tipo_fluxo=metadata.get("tipo_fluxo"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -450,6 +460,7 @@ def handle_currency_realtime_hint(ack, body, client):
         saved_values=saved_values,
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
+        tipo_fluxo=metadata.get("tipo_fluxo"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -481,6 +492,35 @@ def handle_add_exception(ack, body, client):
         saved_values=saved_values,
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
+        tipo_fluxo=metadata.get("tipo_fluxo"),
+    )
+    safe_views_update(client, view_id, updated_modal)
+
+
+@app.action("tipo_fluxo_select")
+def handle_tipo_fluxo_select(ack, body, client):
+    """Quando o canal não é mapeado, reabre o modal completo já com o tipo escolhido manualmente."""
+    ack()
+    view = body["view"]
+    view_id = view["id"]
+    metadata = json.loads(view.get("private_metadata", "{}"))
+
+    current_user_id = metadata.get("current_user_id")
+    channel_id = metadata.get("channel_id")
+    has_file_input = metadata.get("has_file_input", True)
+
+    selected_opt = body.get("actions", [{}])[0].get("selected_option")
+    tipo_escolhido = selected_opt.get("value") if selected_opt else None
+    logger.info(f"🔔 [ACTION: tipo_fluxo_select] Canal não mapeado - tipo escolhido manualmente: {tipo_escolhido}")
+
+    updated_modal = build_aprovacoes_modal(
+        current_user_id=current_user_id,
+        channel_id=channel_id,
+        num_exceptions=1,
+        is_rede=False,
+        is_divida=False,
+        has_file_input=has_file_input,
+        tipo_fluxo=tipo_escolhido,
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -516,6 +556,7 @@ def handle_marcas_select(ack, body, client):
         saved_values=saved_values,
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
+        tipo_fluxo=metadata.get("tipo_fluxo"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -550,7 +591,8 @@ def handle_submission(ack, body, client):
     view = body["view"]
     metadata = json.loads(view.get("private_metadata", "{}"))
     num_exceptions = metadata.get("num_exceptions", 1)
-    
+    tipo_fluxo = metadata.get("tipo_fluxo") or FLUXO_CRESCIMENTO
+
     data = extract_modal_values(view["state"], num_exceptions)
 
     # Validações obrigatórias
@@ -608,13 +650,22 @@ def handle_submission(ack, body, client):
     if not data.get("excecao_1"):
         errors["excecao_1_block"] = "Selecione a Exceção 1."
 
-    # Validação de inviabilidade para cada marca selecionada
-    for m in data.get("marcas", []):
-        slug = re.sub(r"[^a-zA-Z0-9_]", "_", m.lower())
-        b_id = f"inviab_block_{slug}"
-        val = data.get("inviabilidades", {}).get(m) or data.get(f"inviab_{slug}")
-        if val is None or str(val).strip() == "":
-            errors[b_id] = f"Informe o percentual de inviabilidade para a marca {m}."
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        # Validação dos campos específicos da Renovação
+        if data.get("reajuste_liquido") is None or str(data.get("reajuste_liquido")).strip() == "":
+            errors["reajuste_liquido_block"] = "Informe o % de Reajuste Líquido."
+        if not data.get("aprovador_simulador"):
+            errors["aprovador_simulador_block"] = "Selecione o Aprovador indicado no simulador."
+        if not data.get("aprovador_n3"):
+            errors["aprovador_n3_block"] = "Selecione o Aprovador de Exceção (Comercial) N3."
+    else:
+        # Validação de inviabilidade para cada marca selecionada (Crescimento)
+        for m in data.get("marcas", []):
+            slug = re.sub(r"[^a-zA-Z0-9_]", "_", m.lower())
+            b_id = f"inviab_block_{slug}"
+            val = data.get("inviabilidades", {}).get(m) or data.get(f"inviab_{slug}")
+            if val is None or str(val).strip() == "":
+                errors[b_id] = f"Informe o percentual de inviabilidade para a marca {m}."
 
     # Simulador XLSX obrigatório
     if not data.get("simulador_files") and not data.get("simulador_fallback"):
@@ -773,7 +824,9 @@ def handle_submission(ack, body, client):
     plus_pct_display = ", ".join(plus_inviab_vals) if plus_inviab_vals else "n/a"
 
     # Constrói as linhas exatamente no formato do workflow original do usuário
+    tipo_fluxo_label_post = "🌱 CRESCIMENTO" if tipo_fluxo == FLUXO_CRESCIMENTO else "🔄 RENOVAÇÃO"
     raw_lines = [
+        f"Tipo de Solicitação: {tipo_fluxo_label_post}",
         f"Consultor: {consultor_tag} / Liderança: {lider_tag}",
         f"Frente: {data.get('frente') or '-'}",
         "",
@@ -796,12 +849,32 @@ def handle_submission(ack, body, client):
         f"🔗SalesForce: {link_sf}",
         f"🔗Simulador: {link_simulador}",
         "",
-        "Inviabilidade",
-        f"Marca(s) com Inviabilidade: {nomes_marcas_inviab}",
-        f"(Core) % de Inviabilidade {core_pct_display}",
-        f"(Core) Aprovador(es): {aprovador_inviab_tag}",
-        f"(Plus) % de Inviabilidade: {plus_pct_display}",
-        f"(Plus) Aprovador(es): {aprovador_inviab_tag}",
+    ])
+
+    aprovador_simulador_tag = ""
+    aprovador_n3_tag = ""
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        reajuste_val = str(data.get("reajuste_liquido") or "").strip()
+        reajuste_display = f"{reajuste_val}%" if reajuste_val else "n/a"
+        aprovador_simulador_tag = format_mention(data.get("aprovador_simulador"))
+        aprovador_n3_tag = format_mention(data.get("aprovador_n3"))
+        raw_lines.extend([
+            "Renovação",
+            f"% Reajuste Líquido: {reajuste_display}",
+            f"Aprovador indicado no simulador: {aprovador_simulador_tag}",
+            f"Aprovador de Exceção (Comercial) N3: {aprovador_n3_tag}",
+        ])
+    else:
+        raw_lines.extend([
+            "Inviabilidade",
+            f"Marca(s) com Inviabilidade: {nomes_marcas_inviab}",
+            f"(Core) % de Inviabilidade {core_pct_display}",
+            f"(Core) Aprovador(es): {aprovador_inviab_tag}",
+            f"(Plus) % de Inviabilidade: {plus_pct_display}",
+            f"(Plus) Aprovador(es): {aprovador_inviab_tag}",
+        ])
+
+    raw_lines.extend([
         "",
         "Contexto Geral:",
         f"{data.get('contexto_geral') or 'Não informado.'}",
@@ -860,27 +933,48 @@ def handle_submission(ack, body, client):
             "scope_reason": f"Exceção operacional identificada: {exc_nome} (Regra de Operações exigida).",
         })
 
-    # Alçada Inviabilidade - Core e Plus são aprovações independentes (cada uma com seu próprio status)
-    if core_inviab_vals:
-        nomes_inviab_core = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab if m in MARCAS_CORE])
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        # Alçadas específicas da Renovação: Aprovador do Simulador e Aprovador N3
+        aprovador_simulador_display = aprovador_simulador_tag.replace("@", "").strip()
         approvals_list.append({
-            "key": "inviabilidade_core",
-            "role_title": "🚨 APROVAÇÃO INVIABILIDADE (Core)",
-            "short_label": "Inviabilidade Core",
-            "approver_id": "",
-            "approver_name": aprovador_inviab_nome,
-            "scope_reason": f"Inviabilidade identificada na(s) marca(s) Core: {nomes_inviab_core}.",
+            "key": "aprovador_simulador",
+            "role_title": "📊 APROVAÇÃO SIMULADOR (Renovação)",
+            "short_label": "Aprovador Simulador",
+            "approver_id": data.get("aprovador_simulador") if (data.get("aprovador_simulador") or "").startswith(("U", "W")) else "",
+            "approver_name": aprovador_simulador_display,
+            "scope_reason": "Aprovador indicado no simulador de renovação, conforme preenchido no formulário.",
         })
-    if plus_inviab_vals:
-        nomes_inviab_plus = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab if m not in MARCAS_CORE])
+        aprovador_n3_display = aprovador_n3_tag.replace("@", "").strip()
         approvals_list.append({
-            "key": "inviabilidade_plus",
-            "role_title": "🚨 APROVAÇÃO INVIABILIDADE (Plus)",
-            "short_label": "Inviabilidade Plus",
-            "approver_id": "",
-            "approver_name": aprovador_inviab_nome,
-            "scope_reason": f"Inviabilidade identificada na(s) marca(s) Plus: {nomes_inviab_plus}.",
+            "key": "aprovador_n3_renovacao",
+            "role_title": "🏛️ APROVAÇÃO N3 (Renovação)",
+            "short_label": "Aprovador N3",
+            "approver_id": data.get("aprovador_n3") if (data.get("aprovador_n3") or "").startswith(("U", "W")) else "",
+            "approver_name": aprovador_n3_display,
+            "scope_reason": "Aprovador de Exceção (Comercial) N3 da Marca/Vertical, conforme preenchido no formulário.",
         })
+    else:
+        # Alçada Inviabilidade (Crescimento) - Core e Plus são aprovações independentes
+        if core_inviab_vals:
+            nomes_inviab_core = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab if m in MARCAS_CORE])
+            approvals_list.append({
+                "key": "inviabilidade_core",
+                "role_title": "🚨 APROVAÇÃO INVIABILIDADE (Core)",
+                "short_label": "Inviabilidade Core",
+                "approver_id": "",
+                "approver_name": aprovador_inviab_nome,
+                "scope_reason": f"Inviabilidade identificada na(s) marca(s) Core: {nomes_inviab_core}.",
+            })
+        if plus_inviab_vals:
+            nomes_inviab_plus = ", ".join([f"{m} ({p})" for m, p in marcas_com_inviab if m not in MARCAS_CORE])
+            approvals_list.append({
+                "key": "inviabilidade_plus",
+                "role_title": "🚨 APROVAÇÃO INVIABILIDADE (Plus)",
+                "short_label": "Inviabilidade Plus",
+                "approver_id": "",
+                "approver_name": aprovador_inviab_nome,
+                "scope_reason": f"Inviabilidade identificada na(s) marca(s) Plus: {nomes_inviab_plus}.",
+            })
 
     # Alçada Especial Dívida (> R$ 50k)
     if tem_divida_alta:
@@ -895,6 +989,7 @@ def handle_submission(ack, body, client):
         })
 
     extra_ticket_data = {
+        "tipo_fluxo": tipo_fluxo,
         "acv": f"R$ {acv_limpo}" if acv_limpo and acv_limpo != "-" else "Não informado",
         "marcas": marcas_str if marcas_str else "Não informada",
         "cnpj": cnpj_formatado,
@@ -916,6 +1011,10 @@ def handle_submission(ack, body, client):
         "contexto_geral": data.get("contexto_geral") or "",
         "excecoes": excecoes_estruturadas,
         "mais_excecoes": len(excecoes_estruturadas) > 1,
+        # Campos específicos da Renovação (ficam vazios/None no fluxo de Crescimento)
+        "pct_reajuste_liquido": data.get("reajuste_liquido") if tipo_fluxo == FLUXO_RENOVACAO else None,
+        "aprovador_simulador": aprovador_simulador_tag.replace("@", "").strip() if tipo_fluxo == FLUXO_RENOVACAO else "",
+        "aprovador_n3_renovacao": aprovador_n3_tag.replace("@", "").strip() if tipo_fluxo == FLUXO_RENOVACAO else "",
     }
 
     # 1. Posta a MENSAGEM ÚNICA no canal
@@ -944,9 +1043,10 @@ def handle_submission(ack, body, client):
     }
     initial_blocks = build_thread_blocks(temp_ticket)
 
+    tipo_fluxo_label_curto = "Crescimento" if tipo_fluxo == FLUXO_CRESCIMENTO else "Renovação"
     resp = client.chat_postMessage(
         channel=channel_id,
-        text=f"Aprovações Arco CE 2027: {data.get('razao_social')}",
+        text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {data.get('razao_social')}",
         blocks=initial_blocks,
     )
     thread_ts = resp["ts"]
@@ -981,7 +1081,7 @@ def handle_submission(ack, body, client):
             channel=channel_id,
             ts=thread_ts,
             blocks=real_blocks,
-            text=f"Aprovações Arco CE 2027: {ticket['escola']}"
+            text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {ticket['escola']}"
         )
     except Exception as e:
         logger.warning(f"Erro ao atualizar valores dos botões no post inicial: {e}")

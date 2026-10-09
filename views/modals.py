@@ -4,17 +4,31 @@ from typing import Dict, Any, Optional
 from config.exceptions_rules import ALL_EXCEPTIONS_LIST
 from config.mock_users import MOCK_CONSULTORES, MOCK_LIDERES, MOCK_APROVADORES
 from config.triagem_config import USE_MOCK_USERS
+from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO
 from utils.currency_words import valor_para_extenso, format_real_input
 
-# Lista de opções de Frente
-FRENTES_OPTIONS = [
-    "(CE) Inbound",
-    "(CE) ArcoPlus Novas",
-    "(CE) Outbound SAS/SPE",
-    "(CE) Outbound COC/GKE",
-    "(CE) Outbound SAE/CQT",
-    "(CE) KA",
-]
+# Lista de opções de Frente, por tipo de fluxo
+FRENTES_OPTIONS_POR_FLUXO = {
+    FLUXO_CRESCIMENTO: [
+        "(CE) Inbound",
+        "(CE) ArcoPlus Novas",
+        "(CE) Outbound SAS/SPE",
+        "(CE) Outbound COC/GKE",
+        "(CE) Outbound SAE/CQT",
+        "(CE) KA",
+    ],
+    FLUXO_RENOVACAO: [
+        "CSE/CSP",
+    ],
+}
+
+# Mantido por compatibilidade (uso externo que não considera o tipo de fluxo)
+FRENTES_OPTIONS = FRENTES_OPTIONS_POR_FLUXO[FLUXO_CRESCIMENTO]
+
+TIPO_FLUXO_LABELS = {
+    FLUXO_CRESCIMENTO: "🌱 Crescimento",
+    FLUXO_RENOVACAO: "🔄 Renovação",
+}
 
 # Marcas Oficiais: Core e Plus
 MARCAS_CORE = [
@@ -58,14 +72,25 @@ def build_aprovacoes_modal(
     saved_values: Optional[Dict[str, Any]] = None,
     cnpj_info: Optional[Dict[str, Any]] = None,
     has_file_input: bool = True,
+    tipo_fluxo: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Constrói o dicionário de blocos da janela modal 'Aprovações Arco'
     com renderização dinâmica imediata para Marcas, Dívida, CNPJ, Inviabilidade e Exceções.
+
+    tipo_fluxo: "crescimento" ou "renovacao", resolvido a partir do canal de
+    origem (config/flow_config.py). Quando None, o canal não foi mapeado (ou
+    não pôde ser recuperado) e o modal pede que o consultor escolha
+    manualmente antes de exibir o restante do formulário.
     """
     saved_values = saved_values or {}
     cnpj_info = cnpj_info or {}
-    
+
+    # Se o tipo não veio resolvido pelo canal, usa o que o consultor escolheu
+    # manualmente no fallback (campo tipo_fluxo_select, ver abaixo).
+    if not tipo_fluxo:
+        tipo_fluxo = saved_values.get("tipo_fluxo")
+
     # Sincroniza flags com saved_values
     if saved_values.get("rede_grupo") == "sim":
         is_rede = True
@@ -86,9 +111,59 @@ def build_aprovacoes_modal(
         "is_divida": is_divida,
         "cnpj_info": cnpj_info,
         "has_file_input": True,
+        "tipo_fluxo": tipo_fluxo,
     }
 
     blocks = []
+
+    # -------------------------------------------------------------
+    # 0. Tag do Tipo de Fluxo - sempre visível quando já resolvido,
+    #    ou seletor obrigatório quando o canal não pôde ser identificado.
+    # -------------------------------------------------------------
+    if tipo_fluxo in TIPO_FLUXO_LABELS:
+        blocks.append({
+            "type": "context",
+            "block_id": "tipo_fluxo_tag_block",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"🏷️ *Tipo de Solicitação:* {TIPO_FLUXO_LABELS[tipo_fluxo]}",
+                }
+            ],
+        })
+    else:
+        tipo_fluxo_options = [
+            {"text": {"type": "plain_text", "text": label}, "value": key}
+            for key, label in TIPO_FLUXO_LABELS.items()
+        ]
+        blocks.append({
+            "type": "input",
+            "block_id": "tipo_fluxo_select_block",
+            "dispatch_action": True,
+            "element": {
+                "type": "static_select",
+                "action_id": "tipo_fluxo_select",
+                "placeholder": {"type": "plain_text", "text": "Selecionar o tipo de solicitação"},
+                "options": tipo_fluxo_options,
+            },
+            "label": {"type": "plain_text", "text": "Tipo de Solicitação:"},
+            "hint": {"type": "plain_text", "text": "Não identificamos automaticamente o tipo pelo canal. Selecione manualmente para continuar."},
+        })
+        # Sem o tipo resolvido ainda não é possível saber quais campos exibir
+        # (Frente, Inviabilidade x Reajuste etc. diferem entre os fluxos) -
+        # o modal mostra só esse seletor; ao escolher, dispatch_action
+        # reabre com o formulário completo do tipo escolhido.
+        return {
+            "type": "modal",
+            "callback_id": "modal_aprovacoes_arco",
+            "title": {"type": "plain_text", "text": "Aprovações Arco"},
+            "submit": {"type": "plain_text", "text": "Continuar"},
+            "close": {"type": "plain_text", "text": "Fechar"},
+            "private_metadata": json.dumps(metadata),
+            "blocks": blocks,
+        }
+
+    frentes_options_list = FRENTES_OPTIONS_POR_FLUXO.get(tipo_fluxo, FRENTES_OPTIONS_POR_FLUXO[FLUXO_CRESCIMENTO])
 
     # -------------------------------------------------------------
     # 1. Frente (P1) - Obrigatório
@@ -98,7 +173,7 @@ def build_aprovacoes_modal(
             "text": {"type": "plain_text", "text": opt},
             "value": opt,
         }
-        for opt in FRENTES_OPTIONS
+        for opt in frentes_options_list
     ]
     initial_frente = saved_values.get("frente")
     frente_element = {
@@ -549,42 +624,123 @@ def build_aprovacoes_modal(
 
     blocks.append({"type": "divider"})
 
-    # -------------------------------------------------------------
-    # 14. Inviabilidade personalizada por marca (P14)
-    # -------------------------------------------------------------
-    inviabilidades_salvas = saved_values.get("inviabilidades", {})
-    if selected_marcas:
-        for m in selected_marcas:
-            slug = re.sub(r"[^a-zA-Z0-9_]", "_", m.lower())
-            val_salvo = inviabilidades_salvas.get(m) or saved_values.get(f"inviab_{slug}") or ""
-            inviab_elem = {
-                "type": "number_input",
-                "is_decimal_allowed": True,
-                "action_id": f"inviab_input_{slug}",
-                "placeholder": {"type": "plain_text", "text": "Ex: 10"},
-            }
-            if val_salvo is not None and str(val_salvo) != "":
-                limpo_num = str(val_salvo).replace("%", "").strip()
-                inviab_elem["initial_value"] = limpo_num
-
-            blocks.append({
-                "type": "input",
-                "block_id": f"inviab_block_{slug}",
-                "element": inviab_elem,
-                "label": {"type": "plain_text", "text": f"[{m}] Qual % de inviabilidade?"},
-                "hint": {"type": "plain_text", "text": "Inviabilidade conforme Alçada do Simulador"},
-            })
-    else:
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        # -------------------------------------------------------------
+        # 14 (Renovação). % Reajuste Líquido + Aprovadores do Simulador e N3
+        # -------------------------------------------------------------
+        reajuste_elem = {
+            "type": "number_input",
+            "is_decimal_allowed": True,
+            "action_id": "reajuste_liquido_input",
+            "placeholder": {"type": "plain_text", "text": "Ex: 8.5"},
+        }
+        if saved_values.get("reajuste_liquido") is not None and str(saved_values.get("reajuste_liquido")) != "":
+            reajuste_elem["initial_value"] = str(saved_values.get("reajuste_liquido")).replace("%", "").strip()
         blocks.append({
-            "type": "context",
-            "block_id": "inviab_aviso_sem_marcas_block",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": "ℹ️ *Inviabilidade:* Selecione a(s) marca(s) acima para preencher o percentual de cada uma.",
-                }
-            ],
+            "type": "input",
+            "block_id": "reajuste_liquido_block",
+            "element": reajuste_elem,
+            "label": {"type": "plain_text", "text": "% Reajuste Líquido:"},
         })
+
+        if USE_MOCK_USERS:
+            aprov_sim_options = [
+                {"text": {"type": "plain_text", "text": ap["name"][:75]}, "value": ap["id"]}
+                for ap in MOCK_APROVADORES
+            ]
+            aprovador_simulador_elem = {
+                "type": "static_select",
+                "action_id": "aprovador_simulador_select",
+                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador"},
+                "options": aprov_sim_options,
+            }
+            if saved_values.get("aprovador_simulador"):
+                for opt in aprov_sim_options:
+                    if opt["value"] == saved_values.get("aprovador_simulador"):
+                        aprovador_simulador_elem["initial_option"] = opt
+                        break
+        else:
+            aprovador_simulador_elem = {
+                "type": "users_select",
+                "action_id": "aprovador_simulador_select",
+                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador"},
+            }
+            if saved_values.get("aprovador_simulador"):
+                aprovador_simulador_elem["initial_user"] = saved_values.get("aprovador_simulador")
+        blocks.append({
+            "type": "input",
+            "block_id": "aprovador_simulador_block",
+            "element": aprovador_simulador_elem,
+            "label": {"type": "plain_text", "text": "Aprovador indicado no simulador:"},
+        })
+
+        if USE_MOCK_USERS:
+            aprov_n3_options = [
+                {"text": {"type": "plain_text", "text": ap["name"][:75]}, "value": ap["id"]}
+                for ap in MOCK_APROVADORES
+            ]
+            aprovador_n3_elem = {
+                "type": "static_select",
+                "action_id": "aprovador_n3_select",
+                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador N3"},
+                "options": aprov_n3_options,
+            }
+            if saved_values.get("aprovador_n3"):
+                for opt in aprov_n3_options:
+                    if opt["value"] == saved_values.get("aprovador_n3"):
+                        aprovador_n3_elem["initial_option"] = opt
+                        break
+        else:
+            aprovador_n3_elem = {
+                "type": "users_select",
+                "action_id": "aprovador_n3_select",
+                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador N3"},
+            }
+            if saved_values.get("aprovador_n3"):
+                aprovador_n3_elem["initial_user"] = saved_values.get("aprovador_n3")
+        blocks.append({
+            "type": "input",
+            "block_id": "aprovador_n3_block",
+            "element": aprovador_n3_elem,
+            "label": {"type": "plain_text", "text": "Aprovador de Exceção (Comercial) N3 da Marca/Vertical:"},
+        })
+    else:
+        # -------------------------------------------------------------
+        # 14 (Crescimento). Inviabilidade personalizada por marca
+        # -------------------------------------------------------------
+        inviabilidades_salvas = saved_values.get("inviabilidades", {})
+        if selected_marcas:
+            for m in selected_marcas:
+                slug = re.sub(r"[^a-zA-Z0-9_]", "_", m.lower())
+                val_salvo = inviabilidades_salvas.get(m) or saved_values.get(f"inviab_{slug}") or ""
+                inviab_elem = {
+                    "type": "number_input",
+                    "is_decimal_allowed": True,
+                    "action_id": f"inviab_input_{slug}",
+                    "placeholder": {"type": "plain_text", "text": "Ex: 10"},
+                }
+                if val_salvo is not None and str(val_salvo) != "":
+                    limpo_num = str(val_salvo).replace("%", "").strip()
+                    inviab_elem["initial_value"] = limpo_num
+
+                blocks.append({
+                    "type": "input",
+                    "block_id": f"inviab_block_{slug}",
+                    "element": inviab_elem,
+                    "label": {"type": "plain_text", "text": f"[{m}] Qual % de inviabilidade?"},
+                    "hint": {"type": "plain_text", "text": "Inviabilidade conforme Alçada do Simulador"},
+                })
+        else:
+            blocks.append({
+                "type": "context",
+                "block_id": "inviab_aviso_sem_marcas_block",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "ℹ️ *Inviabilidade:* Selecione a(s) marca(s) acima para preencher o percentual de cada uma.",
+                    }
+                ],
+            })
 
     # -------------------------------------------------------------
     # 15. Contexto Geral da Escola/Negociação (P15)
@@ -787,6 +943,21 @@ def extract_modal_values(view_state: Dict[str, Any], num_exceptions: int) -> Dic
                     res[f"inviab_{slug}"] = val
 
     res["inviabilidades"] = inviabilidades
+
+    # Campos específicos da Renovação
+    res["reajuste_liquido"] = get_val("reajuste_liquido_block", "reajuste_liquido_input")
+    res["aprovador_simulador"] = (
+        get_user("aprovador_simulador_block", "aprovador_simulador_select")
+        or get_selected("aprovador_simulador_block", "aprovador_simulador_select")
+    )
+    res["aprovador_n3"] = (
+        get_user("aprovador_n3_block", "aprovador_n3_select")
+        or get_selected("aprovador_n3_block", "aprovador_n3_select")
+    )
+
+    # Fallback manual do tipo de fluxo, quando o canal não foi mapeado
+    res["tipo_fluxo"] = get_selected("tipo_fluxo_select_block", "tipo_fluxo_select")
+
     res["contexto_geral"] = get_val("contexto_geral_block", "contexto_geral_input")
 
     # Exceções dinâmicas

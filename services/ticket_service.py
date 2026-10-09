@@ -773,11 +773,13 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
 # no formato tabular antes de decidir onde eles vão ser carregados.
 
 TICKET_ROW_FIELDS = [
-    "ticket_key", "channel_id", "thread_ts", "thread_permalink", "escola", "cnpj", "inep",
+    "ticket_key", "tipo_fluxo", "channel_id", "thread_ts", "thread_permalink", "escola", "cnpj", "inep",
     "consultor_id", "consultor_name", "frente", "marcas", "alunado", "acv",
     "rede_grupo", "nome_rede", "cnpjs_rede", "tem_divida_alta", "valor_divida",
     "marcas_com_inviab", "nomes_marcas_inviab", "link_sf", "simulador_link",
     "contexto_geral", "mais_excecoes", "excecao_por_marca",
+    # Específicos da Renovação (vazios em tickets de Crescimento)
+    "pct_reajuste_liquido", "aprovador_simulador", "aprovador_n3_renovacao",
     "status", "created_at", "completed_at",
     "rejected_by_id", "rejected_by_name", "rejection_reason_label", "rejection_details",
 ]
@@ -810,6 +812,9 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
     extra = ticket.get("extra_data", {}) or {}
     return {
         "ticket_key": ticket.get("key"),
+        # Tickets criados antes do suporte a 2 fluxos não têm tipo_fluxo
+        # gravado - eram todos do fluxo de Crescimento, o único que existia.
+        "tipo_fluxo": extra.get("tipo_fluxo") or "crescimento",
         "channel_id": ticket.get("channel_id"),
         "thread_ts": ticket.get("thread_ts"),
         "thread_permalink": ticket.get("thread_permalink"),
@@ -834,6 +839,9 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "contexto_geral": extra.get("contexto_geral"),
         "mais_excecoes": extra.get("mais_excecoes", False),
         "excecao_por_marca": _excecao_por_marca(extra),
+        "pct_reajuste_liquido": extra.get("pct_reajuste_liquido"),
+        "aprovador_simulador": extra.get("aprovador_simulador"),
+        "aprovador_n3_renovacao": extra.get("aprovador_n3_renovacao"),
         "status": ticket.get("status"),
         "created_at": ticket.get("created_at"),
         "completed_at": ticket.get("completed_at"),
@@ -945,43 +953,52 @@ def to_tabular_approval_records(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def export_to_csv(out_dir: str) -> Dict[str, str]:
     """
-    Exporta todos os tickets persistidos para 3 CSVs (tickets.csv,
-    approvals.csv e exceptions.csv), prontos para carregar em qualquer
-    tabela (BigQuery, Sheets, Postgres, etc.) no dia em que houver um
-    destino definido. Retorna os caminhos dos arquivos gerados.
+    Exporta todos os tickets persistidos para 6 CSVs (3 por tipo de fluxo:
+    tickets_crescimento.csv/tickets_renovacao.csv, approvals_*.csv e
+    exceptions_*.csv), prontos para carregar em planilhas/tabelas separadas
+    por tipo de solicitação (Crescimento e Renovação). O estado em
+    tickets_state.json continua único - a separação acontece só aqui, na
+    exportação. Retorna os caminhos de todos os arquivos gerados.
     """
     os.makedirs(out_dir, exist_ok=True)
     tickets = load_tickets()
 
-    tickets_path = os.path.join(out_dir, "tickets.csv")
-    approvals_path = os.path.join(out_dir, "approvals.csv")
-    exceptions_path = os.path.join(out_dir, "exceptions.csv")
+    tickets_por_fluxo: Dict[str, list] = {"crescimento": [], "renovacao": []}
+    for ticket in tickets.values():
+        tipo = (ticket.get("extra_data", {}) or {}).get("tipo_fluxo") or "crescimento"
+        tickets_por_fluxo.setdefault(tipo, []).append(ticket)
 
-    with open(tickets_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=TICKET_ROW_FIELDS)
-        writer.writeheader()
-        for ticket in tickets.values():
-            writer.writerow(to_tabular_record(ticket))
+    paths: Dict[str, str] = {}
+    for tipo, tickets_do_tipo in tickets_por_fluxo.items():
+        tickets_path = os.path.join(out_dir, f"tickets_{tipo}.csv")
+        approvals_path = os.path.join(out_dir, f"approvals_{tipo}.csv")
+        exceptions_path = os.path.join(out_dir, f"exceptions_{tipo}.csv")
 
-    with open(approvals_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=APPROVAL_ROW_FIELDS)
-        writer.writeheader()
-        for ticket in tickets.values():
-            for row in to_tabular_approval_records(ticket):
-                writer.writerow(row)
+        with open(tickets_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=TICKET_ROW_FIELDS)
+            writer.writeheader()
+            for ticket in tickets_do_tipo:
+                writer.writerow(to_tabular_record(ticket))
 
-    with open(exceptions_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=EXCEPTION_ROW_FIELDS)
-        writer.writeheader()
-        for ticket in tickets.values():
-            for row in to_tabular_exception_records(ticket):
-                writer.writerow(row)
+        with open(approvals_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=APPROVAL_ROW_FIELDS)
+            writer.writeheader()
+            for ticket in tickets_do_tipo:
+                for row in to_tabular_approval_records(ticket):
+                    writer.writerow(row)
 
-    return {
-        "tickets_csv": tickets_path,
-        "approvals_csv": approvals_path,
-        "exceptions_csv": exceptions_path,
-    }
+        with open(exceptions_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=EXCEPTION_ROW_FIELDS)
+            writer.writeheader()
+            for ticket in tickets_do_tipo:
+                for row in to_tabular_exception_records(ticket):
+                    writer.writerow(row)
+
+        paths[f"tickets_csv_{tipo}"] = tickets_path
+        paths[f"approvals_csv_{tipo}"] = approvals_path
+        paths[f"exceptions_csv_{tipo}"] = exceptions_path
+
+    return paths
 
 
 # =========================================================================

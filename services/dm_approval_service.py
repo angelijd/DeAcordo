@@ -28,6 +28,8 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
     marcas = ticket.get("marcas") or ticket.get("extra_data", {}).get("marcas") or "Não informada"
     approvals = ticket.get("approvals", {})
     permalink = ticket.get("thread_permalink") or "#"
+    tipo_fluxo = ticket.get("extra_data", {}).get("tipo_fluxo")
+    tipo_fluxo_tag = "🔄 Renovação" if tipo_fluxo == "renovacao" else "🌱 Crescimento"
 
     for key, apprv in approvals.items():
         if apprv.get("status") == "approved":
@@ -59,7 +61,13 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
                 {
                     "type": "header",
                     "text": {"type": "plain_text", "text": header_text, "emoji": True}
-                }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {"type": "mrkdwn", "text": f"🏷️ *Tipo de Solicitação:* {tipo_fluxo_tag}"}
+                    ]
+                },
             ]
 
             if is_mock_target:
