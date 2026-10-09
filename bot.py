@@ -15,6 +15,7 @@ from config.approvers_map import format_user_mention
 from config.exceptions_rules import EXCEPTIONS_RULES
 from config.triagem_config import is_user_triagem
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
+from config.n3_config import N3_MARCAR_APROVADORES, resolver_aprovadores_n3
 from services.receita_service import consultar_cnpj
 from services.inep_service import buscar_inep
 from services.ticket_service import (
@@ -660,8 +661,6 @@ def handle_submission(ack, body, client):
             errors["reajuste_liquido_block"] = "Informe o % de Reajuste Líquido."
         if not data.get("aprovador_simulador"):
             errors["aprovador_simulador_block"] = "Selecione o Aprovador indicado no simulador."
-        if not data.get("aprovador_n3"):
-            errors["aprovador_n3_block"] = "Selecione o Aprovador de Exceção (Comercial) N3."
     else:
         # Validação de inviabilidade para cada marca selecionada (Crescimento)
         for m in data.get("marcas", []):
@@ -857,11 +856,17 @@ def handle_submission(ack, body, client):
 
     aprovador_simulador_tag = ""
     aprovador_n3_tag = ""
+    aprovadores_n3 = []
     if tipo_fluxo == FLUXO_RENOVACAO:
         reajuste_val = str(data.get("reajuste_liquido") or "").strip()
         reajuste_display = f"{reajuste_val}%" if reajuste_val else "n/a"
         aprovador_simulador_tag = format_mention(data.get("aprovador_simulador"))
-        aprovador_n3_tag = format_mention(data.get("aprovador_n3"))
+        aprovadores_n3 = resolver_aprovadores_n3(data.get("frente"), marcas_selecionadas)
+        for n3 in aprovadores_n3:
+            n3["tag"] = f"<@{n3['slack_id']}>" if (N3_MARCAR_APROVADORES and n3["slack_id"]) else f"@{n3['nome']}"
+        aprovador_n3_tag = ", ".join(
+            f"{n3['tag']} ({', '.join(n3['marcas'])})" for n3 in aprovadores_n3
+        ) or "N3 não mapeado para esta Frente/Marca"
         raw_lines.extend([
             "Renovação",
             f"% Reajuste Líquido: {reajuste_display}",
@@ -948,15 +953,15 @@ def handle_submission(ack, body, client):
             "approver_name": aprovador_simulador_display,
             "scope_reason": "Aprovador indicado no simulador de renovação, conforme preenchido no formulário.",
         })
-        aprovador_n3_display = aprovador_n3_tag.replace("@", "").strip()
-        approvals_list.append({
-            "key": "aprovador_n3_renovacao",
-            "role_title": "🏛️ APROVAÇÃO N3 (Renovação)",
-            "short_label": "Aprovador N3",
-            "approver_id": data.get("aprovador_n3") if (data.get("aprovador_n3") or "").startswith(("U", "W")) else "",
-            "approver_name": aprovador_n3_display,
-            "scope_reason": "Aprovador de Exceção (Comercial) N3 da Marca/Vertical, conforme preenchido no formulário.",
-        })
+        for idx, n3 in enumerate(aprovadores_n3, start=1):
+            approvals_list.append({
+                "key": f"aprovador_n3_{idx}",
+                "role_title": "🏛️ APROVAÇÃO N3 (Renovação)",
+                "short_label": f"N3 {n3['nome']}"[:60],
+                "approver_id": n3["slack_id"] if N3_MARCAR_APROVADORES else "",
+                "approver_name": n3["nome"],
+                "scope_reason": f"Aprovador de Exceção (Comercial) N3 de {data.get('frente')} para: {', '.join(n3['marcas'])}.",
+            })
     else:
         # Alçada Inviabilidade (Crescimento) - Core e Plus são aprovações independentes
         if core_inviab_vals:
@@ -1018,7 +1023,7 @@ def handle_submission(ack, body, client):
         # Campos específicos da Renovação (ficam vazios/None no fluxo de Crescimento)
         "pct_reajuste_liquido": data.get("reajuste_liquido") if tipo_fluxo == FLUXO_RENOVACAO else None,
         "aprovador_simulador": aprovador_simulador_tag.replace("@", "").strip() if tipo_fluxo == FLUXO_RENOVACAO else "",
-        "aprovador_n3_renovacao": aprovador_n3_tag.replace("@", "").strip() if tipo_fluxo == FLUXO_RENOVACAO else "",
+        "aprovador_n3_renovacao": ", ".join(n3["nome"] for n3 in aprovadores_n3),
     }
 
     # 1. Posta a MENSAGEM ÚNICA no canal

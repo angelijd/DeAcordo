@@ -18,7 +18,8 @@ FRENTES_OPTIONS_POR_FLUXO = {
         "(CE) KA",
     ],
     FLUXO_RENOVACAO: [
-        "CSE/CSP",
+        "CSE",
+        "CSP",
     ],
 }
 
@@ -676,35 +677,15 @@ def build_aprovacoes_modal(
             "label": {"type": "plain_text", "text": "Aprovador indicado no simulador:"},
         })
 
-        if USE_MOCK_USERS:
-            aprov_n3_options = [
-                {"text": {"type": "plain_text", "text": ap["name"][:75]}, "value": ap["id"]}
-                for ap in MOCK_APROVADORES
-            ]
-            aprovador_n3_elem = {
-                "type": "static_select",
-                "action_id": "aprovador_n3_select",
-                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador N3"},
-                "options": aprov_n3_options,
-            }
-            if saved_values.get("aprovador_n3"):
-                for opt in aprov_n3_options:
-                    if opt["value"] == saved_values.get("aprovador_n3"):
-                        aprovador_n3_elem["initial_option"] = opt
-                        break
-        else:
-            aprovador_n3_elem = {
-                "type": "users_select",
-                "action_id": "aprovador_n3_select",
-                "placeholder": {"type": "plain_text", "text": "Selecione o aprovador N3"},
-            }
-            if saved_values.get("aprovador_n3"):
-                aprovador_n3_elem["initial_user"] = saved_values.get("aprovador_n3")
         blocks.append({
-            "type": "input",
-            "block_id": "aprovador_n3_block",
-            "element": aprovador_n3_elem,
-            "label": {"type": "plain_text", "text": "Aprovador de Exceção (Comercial) N3 da Marca/Vertical:"},
+            "type": "context",
+            "block_id": "aprovador_n3_info_block",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "🏛️ *Aprovador N3:* definido automaticamente pela Frente (CSE/CSP) e pela(s) Marca(s).",
+                }
+            ],
         })
     else:
         # -------------------------------------------------------------
@@ -951,10 +932,6 @@ def extract_modal_values(view_state: Dict[str, Any], num_exceptions: int) -> Dic
     res["aprovador_simulador"] = (
         get_user("aprovador_simulador_block", "aprovador_simulador_select")
         or get_selected("aprovador_simulador_block", "aprovador_simulador_select")
-    )
-    res["aprovador_n3"] = (
-        get_user("aprovador_n3_block", "aprovador_n3_select")
-        or get_selected("aprovador_n3_block", "aprovador_n3_select")
     )
 
     # Fallback manual do tipo de fluxo, quando o canal não foi mapeado
