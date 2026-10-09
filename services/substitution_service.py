@@ -11,7 +11,9 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("substitution_service")
 
-SUBSTITUTIONS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "substitutions_state.json")
+# Mesmo DATA_DIR usado por services/ticket_service.py - ver comentário lá.
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.dirname(os.path.dirname(__file__))
+SUBSTITUTIONS_FILE = os.path.join(DATA_DIR, "substitutions_state.json")
 
 
 def _load_substitutions_state() -> Dict[str, Any]:
@@ -27,6 +29,7 @@ def _load_substitutions_state() -> Dict[str, Any]:
 
 def _save_substitutions_state(state: Dict[str, Any]):
     try:
+        os.makedirs(os.path.dirname(SUBSTITUTIONS_FILE) or ".", exist_ok=True)
         with open(SUBSTITUTIONS_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
     except Exception as e:

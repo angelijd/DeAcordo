@@ -10,7 +10,12 @@ from config.triagem_config import USE_MOCK_USERS
 
 logger = logging.getLogger("ticket_service")
 
-TICKETS_FILE = os.path.join(os.path.dirname(__file__), "..", "tickets_state.json")
+# DATA_DIR permite apontar os arquivos de estado para um disco persistente
+# (ex.: um Volume no Railway) em vez da pasta do projeto, que normalmente é
+# apagada a cada novo deploy. Sem DATA_DIR configurado, mantém o comportamento
+# de sempre (arquivo na raiz do projeto).
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.join(os.path.dirname(__file__), "..")
+TICKETS_FILE = os.path.join(DATA_DIR, "tickets_state.json")
 
 BR_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -104,6 +109,7 @@ def load_tickets() -> Dict[str, Any]:
 def save_tickets(tickets: Dict[str, Any]):
     """Salva os tickets de forma persistente"""
     try:
+        os.makedirs(os.path.dirname(TICKETS_FILE) or ".", exist_ok=True)
         with open(TICKETS_FILE, "w", encoding="utf-8") as f:
             json.dump(tickets, f, ensure_ascii=False, indent=2)
     except Exception as e:
