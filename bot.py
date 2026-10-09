@@ -1799,8 +1799,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             f"❌ *ALÇADA REPROVADA*\n"
             f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
             f"• *{role_title}* reprovada por <@{user_id}> em {now_str}\n"
-            f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n"
-            f"➡️ As demais alçadas seguem em análise, para o consultor receber todos os ajustes de uma vez."
+            f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}"
         )
 
     client.chat_postMessage(unfurl_links=False, unfurl_media=False,
