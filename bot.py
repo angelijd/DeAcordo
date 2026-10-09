@@ -1567,7 +1567,7 @@ def handle_btn_decidir_minhas(ack, body, client):
         client.chat_postEphemeral(
             channel=channel_id,
             user=user_id,
-            text="ℹ️ Você não tem aprovações pendentes nesta solicitação. Se deveria ter, peça para a @triagem substituir o aprovador.",
+            text="ℹ️ Você não tem aprovações pendentes nesta solicitação.",
         )
         return
     safe_views_open(client, body["trigger_id"], build_decidir_modal(ticket, user_id, check_approval_authorization))
