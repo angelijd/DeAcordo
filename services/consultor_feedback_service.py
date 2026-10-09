@@ -234,7 +234,7 @@ def send_consultor_rejection_dm(
         )
     elif ticket.get("status") == "completed":
         proximos_passos = (
-            "Essa exceção sai do pedido. Todas as alçadas já decidiram e o restante está liberado para contrato."
+            "Todas as alçadas já decidiram. Verifique os pareceres na thread."
         )
     elif parcial:
         proximos_passos = (
