@@ -304,8 +304,7 @@ def mensagem_conclusao(ticket: Dict[str, Any]) -> str:
     if reprovadas:
         return (
             "🟡 *SOLICITAÇÃO CONCLUÍDA COM APROVAÇÃO PARCIAL.* Todos os decisores deliberaram. "
-            f"Fora do contrato (exceções reprovadas): {', '.join(reprovadas)}. "
-            "O restante está liberado para emissão de contrato."
+            f"Fora do contrato (exceções reprovadas): {', '.join(reprovadas)}."
         )
     return (
         "🎉 *SOLICITAÇÃO 100% APROVADA E CONCLUÍDA!* Todos os decisores de alçada deliberaram. "
