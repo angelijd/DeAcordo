@@ -241,17 +241,41 @@ def update_ticket_card_ts(ticket_key: str, card_msg_ts: str):
 
 
 def _concluir_se_todas_decididas(ticket: Dict[str, Any], now_str: str) -> bool:
-    """Conclui o ticket quando toda alçada foi aprovada ou é uma exceção já reprovada."""
-    approvals = ticket["approvals"].values()
-    decididas = all(
-        a["status"] == "approved" or (a.get("parcial") and a["status"] == "rejected")
-        for a in approvals
-    )
-    if decididas:
+    """
+    Conclui o ticket quando todas as alçadas decidiram. Nenhuma reprovação encerra o pedido antes
+    disso: as demais alçadas seguem para o consultor receber todos os ajustes de uma vez.
+    - Alguma alçada obrigatória reprovada -> ticket "rejected" (precisa de ajustes e novo formulário).
+    - Só exceções reprovadas -> "completed" com aprovação parcial.
+    """
+    approvals = list(ticket["approvals"].values())
+    if any(a["status"] == "pending" for a in approvals):
+        return False
+
+    ticket["completed_at"] = now_str
+    obrigatorias_reprovadas = [a for a in approvals if a["status"] == "rejected" and not a.get("parcial")]
+    if obrigatorias_reprovadas:
+        primeira = obrigatorias_reprovadas[0]
+        ticket["status"] = "rejected"
+        ticket["resultado"] = "reprovado"
+        ticket["rejection_reason_key"] = primeira.get("reason_key")
+        ticket["rejection_reason_label"] = primeira.get("reason_label")
+        ticket["rejection_details"] = primeira.get("details")
+        ticket["rejected_by_id"] = primeira.get("rejected_by_id")
+        ticket["rejected_by_name"] = primeira.get("rejected_by_name")
+        ticket["rejected_role"] = primeira.get("role_title", "Alçada")
+    else:
         ticket["status"] = "completed"
-        ticket["completed_at"] = now_str
         ticket["resultado"] = "parcial" if any(a["status"] == "rejected" for a in approvals) else "total"
-    return decididas
+    return True
+
+
+def reprovacoes(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Todas as alçadas reprovadas (exceções e obrigatórias), na ordem do pedido."""
+    return [a for a in ticket.get("approvals", {}).values() if a.get("status") == "rejected"]
+
+
+def reacao_conclusao(ticket: Dict[str, Any]) -> str:
+    return "x" if ticket.get("status") == "rejected" else "white_check_mark"
 
 
 def excecoes_reprovadas(ticket: Dict[str, Any]) -> List[str]:
@@ -262,7 +286,21 @@ def excecoes_reprovadas(ticket: Dict[str, Any]) -> List[str]:
     ]
 
 
+def _linha_reprovacao(a: Dict[str, Any]) -> str:
+    rotulo = a.get("checklist_label") or a.get("short_label") or a.get("role_title", "Alçada")
+    quem = f"<@{a['rejected_by_id']}>" if str(a.get("rejected_by_id") or "").startswith(("U", "W")) else f"@{a.get('rejected_by_name') or 'Aprovador'}"
+    detalhe = f": _{a['details']}_" if a.get("details") else ""
+    return f"• *{rotulo}* ({quem}) · {a.get('reason_label') or 'Reprovado'}{detalhe}"
+
+
 def mensagem_conclusao(ticket: Dict[str, Any]) -> str:
+    if ticket.get("status") == "rejected":
+        linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
+        return (
+            "❌ *SOLICITAÇÃO REPROVADA.* Todos os decisores deliberaram. Ajustes pedidos:\n"
+            f"{linhas}\n"
+            "O consultor ajusta a proposta e envia um novo formulário."
+        )
     reprovadas = excecoes_reprovadas(ticket)
     if reprovadas:
         return (
@@ -330,7 +368,7 @@ def reject_step(
     details: str = "",
 ) -> Dict[str, Any]:
     """
-    Registra a reprovação de uma alçada individual e encerra o ticket imediatamente como reprovado.
+    Registra a reprovação de uma alçada. O ticket só fecha quando todas as alçadas decidirem.
     """
     tickets = load_tickets()
     ticket = tickets.get(ticket_key)
@@ -352,36 +390,15 @@ def reject_step(
     approval["reason_label"] = reason_label
     approval["details"] = details
 
-    if approval.get("parcial"):
-        # Exceção reprovada: sai do pedido, o resto segue
-        all_completed = _concluir_se_todas_decididas(ticket, now_str)
-        tickets[ticket_key] = ticket
-        save_tickets(tickets)
-        _sync_sheet(ticket_key)
-        return {
-            "success": True,
-            "parcial": True,
-            "all_completed": all_completed,
-            "ticket": ticket,
-            "approval": approval,
-        }
-
-    # Marca todo o ticket como reprovado e encerrado
-    ticket["status"] = "rejected"
-    ticket["completed_at"] = now_str
-    ticket["rejection_reason_key"] = reason_key
-    ticket["rejection_reason_label"] = reason_label
-    ticket["rejection_details"] = details
-    ticket["rejected_by_id"] = user_id
-    ticket["rejected_by_name"] = user_name
-    ticket["rejected_role"] = approval.get("role_title", "Alçada")
-
+    # Nenhuma reprovação encerra o pedido na hora: as demais alçadas seguem decidindo
+    all_completed = _concluir_se_todas_decididas(ticket, now_str)
     tickets[ticket_key] = ticket
     save_tickets(tickets)
     _sync_sheet(ticket_key)
-
     return {
         "success": True,
+        "parcial": bool(approval.get("parcial")),
+        "all_completed": all_completed,
         "ticket": ticket,
         "approval": approval,
     }
@@ -513,12 +530,8 @@ def _linha_status(ticket: Dict[str, Any]) -> str:
     status = ticket.get("status")
 
     if status == "rejected":
-        quem = _mencao_id(ticket.get("rejected_by_id")) or f"@{ticket.get('rejected_by_name') or 'Aprovador'}"
-        motivo = ticket.get("rejection_reason_label") or "Reprovada"
-        linha = f"*Reprovada* por {quem} · {motivo}"
-        if ticket.get("rejection_details"):
-            linha += f"\n_{ticket['rejection_details']}_"
-        return linha + "\nPara seguir, o consultor ajusta a proposta e envia um novo formulário."
+        linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
+        return f"*Reprovada* · ajustes pedidos:\n{linhas}\nPara seguir, o consultor ajusta a proposta e envia um novo formulário."
 
     if status == "completed":
         reprovadas = excecoes_reprovadas(ticket)
@@ -532,9 +545,9 @@ def _linha_status(ticket: Dict[str, Any]) -> str:
     linha = f"*{aprovadas} de {len(approvals)} aprovadas*"
     if faltam:
         linha += f" · falta{'m' if len(faltam) > 1 else ''} {_juntar_nomes(faltam)}"
-    reprovadas = excecoes_reprovadas(ticket)
+    reprovadas = [(a.get("checklist_label") or a.get("short_label") or "Alçada").split(" · ")[0] for a in reprovacoes(ticket)]
     if reprovadas:
-        linha += f" · reprovada: {', '.join(reprovadas)}"
+        linha += f" · reprovad{'as' if len(reprovadas) > 1 else 'a'}: {', '.join(reprovadas)}"
     return linha
 
 
@@ -594,8 +607,16 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         },
         {"type": "section", "text": {"type": "mrkdwn", "text": _linha_status(ticket)[:2900]}},
     ]
-    if pv.get("resumo"):
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": pv["resumo"][:2900]}})
+    if pv.get("resumo") or pv.get("simulador_url"):
+        resumo = {"type": "section", "text": {"type": "mrkdwn", "text": (pv.get("resumo") or " ")[:2900]}}
+        if pv.get("simulador_url"):
+            resumo["accessory"] = {
+                "type": "button",
+                "action_id": "btn_abrir_simulador",
+                "text": {"type": "plain_text", "text": "📎 Simulador", "emoji": True},
+                "url": pv["simulador_url"],
+            }
+        blocks.append(resumo)
     if pv.get("pessoas"):
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": pv["pessoas"][:2900]}]})
     alertas = list(pv.get("extras") or [])
@@ -756,22 +777,18 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # Se o ticket foi reprovado, estampa o banner de encerramento no topo
     if is_rejected:
-        reprovador = ticket.get("rejected_by_name") or "Aprovador"
-        motivo = ticket.get("rejection_reason_label") or "Solicitação Reprovada"
-        detalhes = ticket.get("rejection_details") or "Sem detalhes adicionais."
         reprov_at = ticket.get("completed_at") or datetime.now().strftime("%d/%m às %Hh%M")
+        linhas = "\n".join(_linha_reprovacao(a) for a in reprovacoes(ticket))
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
                     f"🚨 *SOLICITAÇÃO REPROVADA ({reprov_at})*\n"
-                    f"• *Reprovado por:* @{reprovador} ({ticket.get('rejected_role', 'Alçada')})\n"
-                    f"• *Motivo:* *{motivo}*\n"
-                    f"• *Justificativa:* _{detalhes}_\n\n"
+                    f"*Ajustes pedidos:*\n{linhas}\n\n"
                     f"⚠️ *Status:* *Ticket encerrado.* Para dar andamento na negociação, "
                     f"o consultor deve realizar as adequações necessárias e submeter um novo formulário."
-                )
+                )[:2900]
             }
         })
         blocks.append({"type": "divider"})

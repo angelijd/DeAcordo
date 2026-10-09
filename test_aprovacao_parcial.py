@@ -2,7 +2,7 @@ import os
 import tempfile
 
 import services.ticket_service as ts
-from services.ticket_service import create_ticket, approve_step, reject_step, mensagem_conclusao
+from services.ticket_service import create_ticket, approve_step, reject_step, mensagem_conclusao, reacao_conclusao
 
 with tempfile.TemporaryDirectory() as tmp:
     ts.TICKETS_FILE = os.path.join(tmp, "tickets_state.json")
@@ -36,10 +36,19 @@ with tempfile.TemporaryDirectory() as tmp:
     # Exceção já reprovada não pode ser aprovada depois por um botão antigo
     assert approve_step(t["key"], "excecao_1_com", "U_R", "Rafael")["already_approved"]
 
-    # Reprovação de alçada fixa (Líder) continua encerrando tudo
+    # Reprovação de alçada fixa (Líder) NÃO encerra na hora: as demais seguem decidindo,
+    # e no fim o pedido fecha como reprovado com todos os ajustes listados
     t = novo_ticket("2.2")
-    res = reject_step(t["key"], "comercial", "U_LIDER", "Líder", "outros", "c. Outros", "não")
-    assert not res.get("parcial") and res["ticket"]["status"] == "rejected"
+    res = reject_step(t["key"], "comercial", "U_LIDER", "Líder", "outros", "c. Outros", "preço")
+    assert not res.get("parcial") and not res["all_completed"]
+    assert res["ticket"]["status"] == "pending"
+    reject_step(t["key"], "excecao_1_com", "U_R", "Rafael", "outros", "c. Outros", "prazo")
+    res = approve_step(t["key"], "excecao_2_com", "U_R", "Rafael")
+    assert res["all_completed"] and res["ticket"]["status"] == "rejected"
+    assert res["ticket"]["resultado"] == "reprovado"
+    msg = mensagem_conclusao(res["ticket"])
+    assert "REPROVADA" in msg and "preço" in msg and "prazo" in msg
+    assert reacao_conclusao(res["ticket"]) == "x"
 
     # Tudo aprovado continua sendo 100%
     t = novo_ticket("3.3")

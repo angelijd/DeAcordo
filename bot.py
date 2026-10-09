@@ -38,6 +38,7 @@ from services.ticket_service import (
     rotulo_checklist,
     build_decidir_modal,
     alcadas_do_usuario,
+    reacao_conclusao,
 )
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
@@ -952,7 +953,9 @@ def handle_submission(ack, body, client):
     pessoas = [f"👤 {consultor_tag}", f"🧭 Líder {lider_tag}"]
     if link_sf != "-":
         pessoas.append(f"🔗 <{link_sf}|SalesForce>")
-    if link_simulador != "-":
+    # Arquivo do Slack vira botão (link no texto faz o Slack mostrar a prévia grande do XLSX)
+    simulador_url = url_arq if sim_files and url_arq != "#" else ""
+    if link_simulador != "-" and not simulador_url:
         pessoas.append(f"📎 {link_simulador}")
 
     extras = []
@@ -979,6 +982,7 @@ def handle_submission(ack, body, client):
         "pessoas": "  ·  ".join(pessoas),
         "extras": extras,
         "excecoes_sem_alcada": excecoes_sem_alcada,
+        "simulador_url": simulador_url,
     }
 
     dados_escola = [f"CNPJ: {cnpj_formatado}", f"INEP: {inep_val}"]
@@ -1391,7 +1395,7 @@ def handle_dm_approval_action(ack, body, client):
                 client.reactions_add(
                     channel=ticket["channel_id"],
                     timestamp=ticket["thread_ts"],
-                    name="white_check_mark"
+                    name=reacao_conclusao(updated_ticket)
                 )
             except Exception as e:
                 logger.warning(f"Erro no encerramento automático: {e}")
@@ -1525,7 +1529,7 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
             client.reactions_add(
                 channel=ticket["channel_id"],
                 timestamp=ticket["thread_ts"],
-                name="white_check_mark"
+                name=reacao_conclusao(updated_ticket)
             )
         except Exception as e:
             logger.warning(f"Reação check_mark: {e}")
@@ -1535,6 +1539,12 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
 # =========================================================================
 # 4.0. "DECIDIR MINHAS APROVAÇÕES" (post com botão único, POST_BOTOES=unico)
 # =========================================================================
+
+@app.action("btn_abrir_simulador")
+def handle_btn_abrir_simulador(ack):
+    """Botão de link do XLSX do simulador: o Slack abre o arquivo, aqui só confirma o clique."""
+    ack()
+
 
 @app.action("btn_decidir_minhas")
 def handle_btn_decidir_minhas(ack, body, client):
@@ -1782,12 +1792,11 @@ def handle_view_reprovar_ticket(ack, body, client, view):
         )
     else:
         alert_msg = (
-            f"🚨 *SOLICITAÇÃO COMERCIAL REPROVADA*\n"
+            f"❌ *ALÇADA REPROVADA*\n"
             f"👤 *Atenção:* {consultor_tag} (Consultor Responsável)\n"
-            f"• *Escola:* *{escola}*\n"
-            f"• *Alçada:* *{role_title}* deliberada por <@{user_id}> em {now_str}\n"
+            f"• *{role_title}* reprovada por <@{user_id}> em {now_str}\n"
             f"• *Motivo Formal:* *{reason_label}*{detalhes_txt}\n\n"
-            f"⛔ *Status:* *Ticket encerrado.* Para nova análise ou correção, submeta uma nova solicitação via `/solicitacao`."
+            f"➡️ As demais alçadas seguem em análise, para o consultor receber todos os ajustes de uma vez."
         )
 
     client.chat_postMessage(
@@ -1796,21 +1805,17 @@ def handle_view_reprovar_ticket(ack, body, client, view):
         text=alert_msg
     )
 
-    if is_parcial and res.get("all_completed"):
+    # Quando todas as alçadas decidiram: mensagem de encerramento e reação (✅ ou ❌) na mensagem inicial
+    if res.get("all_completed"):
         client.chat_postMessage(
             channel=channel_id,
             thread_ts=updated_ticket["thread_ts"],
             text=mensagem_conclusao(updated_ticket),
         )
-
-    # 2. Reação na mensagem inicial: :x: só quando o pedido inteiro foi reprovado
-    try:
-        if not is_parcial:
-            client.reactions_add(channel=channel_id, timestamp=updated_ticket["thread_ts"], name="x")
-        elif res.get("all_completed"):
-            client.reactions_add(channel=channel_id, timestamp=updated_ticket["thread_ts"], name="white_check_mark")
-    except Exception as e:
-        logger.warning(f"Reação na thread: {e}")
+        try:
+            client.reactions_add(channel=channel_id, timestamp=updated_ticket["thread_ts"], name=reacao_conclusao(updated_ticket))
+        except Exception as e:
+            logger.warning(f"Reação na thread: {e}")
 
     # 3. Atualiza o card de status na thread
     card_msg_ts = updated_ticket.get("card_msg_ts")
