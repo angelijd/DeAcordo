@@ -2115,16 +2115,16 @@ if __name__ == "__main__":
         bg_scheduler = BackgroundScheduler()
         bg_scheduler.add_job(
             lambda: executar_cobranca_pendencias(app.client),
-            CronTrigger(hour=11, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
-            id="cobranca_11h"
+            CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
+            id="cobranca_09h"
         )
         bg_scheduler.add_job(
             lambda: executar_cobranca_pendencias(app.client),
-            CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
-            id="cobranca_17h"
+            CronTrigger(hour=14, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
+            id="cobranca_14h"
         )
         bg_scheduler.start()
-        logger.info("⏰ Agendador de Cobrança Inteligente ativo (11:00 e 17:00, horário de Brasília, seg-sex). DMs só saem para SLA vencido.")
+        logger.info("⏰ Agendador de Cobrança Inteligente ativo (09:00 e 14:00, horário de Brasília, seg-sex). DMs só saem para SLA vencido.")
     except Exception as e:
         logger.warning(f"Aviso ao iniciar BackgroundScheduler: {e}")
 

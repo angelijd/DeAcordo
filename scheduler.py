@@ -34,14 +34,14 @@ if __name__ == "__main__":
         rotina_cobranca()
     else:
         scheduler = BlockingScheduler()
-        # Agenda 2x ao dia: às 11:00 e às 17:00 de segunda a sexta-feira, horário de Brasília
-        trigger_11h = CronTrigger(hour=11, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo")
-        trigger_17h = CronTrigger(hour=17, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo")
+        # Agenda 2x ao dia: às 09:00 e às 14:00 de segunda a sexta-feira, horário de Brasília
+        trigger_09h = CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo")
+        trigger_14h = CronTrigger(hour=14, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo")
 
-        scheduler.add_job(rotina_cobranca, trigger_11h, id="job_11h")
-        scheduler.add_job(rotina_cobranca, trigger_17h, id="job_17h")
+        scheduler.add_job(rotina_cobranca, trigger_09h, id="job_09h")
+        scheduler.add_job(rotina_cobranca, trigger_14h, id="job_14h")
 
-        logger.info("🕒 Agendador de Cobrança iniciado! Execuções diárias às 11:00 e 17:00 (Segunda a Sexta).")
+        logger.info("🕒 Agendador de Cobrança iniciado! Execuções diárias às 09:00 e 14:00 (Segunda a Sexta).")
         try:
             scheduler.start()
         except (KeyboardInterrupt, SystemExit):

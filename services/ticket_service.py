@@ -723,10 +723,8 @@ def executar_cobranca_pendencias(client) -> int:
     for t in pending_tickets:
         escola = t.get("escola", "Escola")
 
-        aprovados = [
-            a["short_label"] for a in t.get("approvals", {}).values() if a["status"] == "approved"
-        ]
-        aprovados_str = ", ".join(aprovados) if aprovados else "nenhuma alçada ainda"
+        permalink = t.get("thread_permalink")
+        link = f"\n🔗 <{permalink}|Abrir a thread da solicitação>" if permalink else ""
 
         for p in t.get("approvals", {}).values():
             if p["status"] != "pending":
@@ -736,35 +734,20 @@ def executar_cobranca_pendencias(client) -> int:
 
             approver_id = p.get("approver_id")
             approver_name = p.get("approver_name")
-            has_real_id = bool(approver_id and approver_id.startswith(("U", "W")))
+            if not (approver_id and approver_id.startswith(("U", "W"))):
+                # Cobrança é só por DM: sem ID de Slack não há para quem mandar.
+                logger.warning(f"Cobrança de SLA para {approver_name}: sem ID de Slack válido, lembrete não enviado.")
+                continue
 
-            if aprovados:
-                msg = f"🔔 *Lembrete (SLA vencido):* o {aprovados_str} já aprovaram. Falta apenas o seu clique de *{p['short_label']}* para liberar o contrato da *{escola}*!"
-            else:
-                msg = f"🔔 *Lembrete (SLA vencido):* a solicitação da *{escola}* aguarda sua aprovação de *{p['short_label']}* e o prazo já venceu."
-
-            if has_real_id:
-                try:
-                    client.chat_postMessage(
-                        channel=approver_id,
-                        text=msg
-                    )
-                    total_cobrados += 1
-                except Exception as e:
-                    logger.error(f"Erro ao enviar cobrança por DM para {approver_name}: {e}")
-            else:
-                # Sem ID real de Slack pra mandar DM: ao menos avisa na thread pública,
-                # mencionando por nome, pra não desaparecer sem rastro.
-                logger.warning(f"Cobrança de SLA para {approver_name}: sem ID de Slack válido para DM, caindo para a thread.")
-                try:
-                    client.chat_postMessage(
-                        channel=t["channel_id"],
-                        thread_ts=t["thread_ts"],
-                        text=f"@{approver_name} {msg}"
-                    )
-                    total_cobrados += 1
-                except Exception as e:
-                    logger.error(f"Erro ao enviar cobrança na thread para {approver_name}: {e}")
+            msg = (
+                f"🔔 *Lembrete (SLA vencido):* Falta a sua análise na *{p['short_label']}* "
+                f"para liberar o contrato da *{escola}*!{link}"
+            )
+            try:
+                client.chat_postMessage(channel=approver_id, text=msg, unfurl_links=False, unfurl_media=False)
+                total_cobrados += 1
+            except Exception as e:
+                logger.error(f"Erro ao enviar cobrança por DM para {approver_name}: {e}")
 
     logger.info(f"Cobrança inteligente concluída: {total_cobrados} lembrete(s) enviado(s).")
     return total_cobrados
@@ -773,7 +756,7 @@ def executar_cobranca_pendencias(client) -> int:
 def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str) -> Dict[str, Any]:
     """
     Dispara cobrança pontual focada nas alçadas pendentes deste ticket específico,
-    postando alerta com menções na thread e disparando lembrete nas DMs dos aprovadores.
+    enviando lembrete só na DM de cada aprovador (a thread não recebe cobrança).
     """
     tickets = load_tickets()
     ticket = tickets.get(ticket_key)
@@ -787,37 +770,7 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
     if not pendentes:
         return {"success": False, "message": "ℹ️ Não há alçadas pendentes para este ticket."}
 
-    channel_id = ticket["channel_id"]
-    thread_ts = ticket["thread_ts"]
     escola = ticket.get("escola", "Escola")
-
-    mentions = []
-    labels = []
-    for p in pendentes:
-        approver_id = p.get("approver_id")
-        approver_name = p.get("approver_name", "Aprovador")
-        if approver_id and approver_id.startswith(("U", "W")):
-            mentions.append(f"<@{approver_id}>")
-        else:
-            mentions.append(f"@{approver_name}")
-        labels.append(p.get("short_label", p.get("role_title", "Alçada")))
-
-    mentions_str = ", ".join(mentions)
-    labels_str = ", ".join(labels)
-
-    thread_msg = (
-        f"🔔 *Cobrança Operacional de Pendências (@triagem por <@{requested_by_user}>)*\n"
-        f"Atenção {mentions_str}: a solicitação da escola *{escola}* ainda aguarda sua deliberação de *{labels_str}* para liberação de contrato."
-    )
-
-    try:
-        client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text=thread_msg
-        )
-    except Exception as e:
-        logger.error(f"Erro ao postar cobrança na thread: {e}")
 
     # Envia lembrete amigável nas DMs dos aprovadores pendentes
     from services.dm_approval_service import USE_MOCK_USERS
@@ -843,8 +796,8 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
                                 "text": (
                                     f"🔔 *Lembrete de Pendência de Aprovação*\n{test_badge}"
                                     f"• *Escola:* {escola}\n"
-                                    f"• *Sua Alçada:* {p.get('role_title')}\n\n"
-                                    f"A equipe de *@triagem* solicitou prioridade na deliberação deste ticket. "
+                                    f"• *Sua Alçada:* {p.get('short_label') or p.get('role_title')}\n\n"
+                                    f"A equipe de *@triagem* solicitou a deliberação deste contrato. "
                                     f"Por favor, verifique seu card de aprovação para dar seu parecer."
                                 )
                             }
@@ -854,7 +807,7 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
                             "elements": [
                                 {
                                     "type": "mrkdwn",
-                                    "text": f"🔗 <{ticket.get('thread_permalink') or '#'}|Acessar thread do canal de negociação>"
+                                    "text": f"🔗 <{ticket.get('thread_permalink') or '#'}|Abrir a thread da solicitação>"
                                 }
                             ]
                         }
@@ -864,10 +817,12 @@ def cobrar_pendencias_de_ticket(client, ticket_key: str, requested_by_user: str)
             except Exception as e:
                 logger.warning(f"Erro ao enviar DM de cobrança: {e}")
 
+    sem_dm = len(pendentes) - total_dms
+    aviso = f" ⚠️ {sem_dm} sem ID de Slack, não cobrada(s)." if sem_dm else ""
     return {
         "success": True,
         "total_pendentes": len(pendentes),
-        "message": f"✅ Cobrança disparada com sucesso na thread e via DM para {len(pendentes)} alçada(s) pendente(s)!"
+        "message": f"✅ Lembrete enviado por DM para {total_dms} alçada(s) pendente(s).{aviso}"
     }
 
 
