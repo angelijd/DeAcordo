@@ -195,7 +195,7 @@ def send_consultor_progress_dm(
         msg_text = f"📋 Progresso da solicitação para {escola}: {last_label} aprovada."
 
     try:
-        client.chat_postMessage(
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
             channel=target_id,
             text=msg_text,
             blocks=blocks
@@ -297,7 +297,7 @@ def send_consultor_rejection_dm(
     ])
 
     try:
-        client.chat_postMessage(
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
             channel=target_id,
             text=f"❌ Atenção: {role_title} reprovada por @{rejected_by_name} ({escola}).",
             blocks=blocks

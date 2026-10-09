@@ -258,7 +258,7 @@ def handle_post_button_command(ack, body, client):
         },
     ]
 
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
         channel=channel_id,
         text="Central de Aprovações Comerciais - Ciclo CE 2027",
         blocks=blocks,
@@ -1357,7 +1357,7 @@ def handle_dm_approval_action(ack, body, client):
 
         # Espelhamento imediato na Thread pública
         try:
-            client.chat_postMessage(
+            client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
                 channel=ticket["channel_id"],
                 thread_ts=ticket["thread_ts"],
                 text=f"✅ *{apprv.get('checklist_label') or role_title}* aprovada por <@{user_id}> em {now_str}."
@@ -1394,7 +1394,7 @@ def handle_dm_approval_action(ack, body, client):
         # Se todas as alçadas foram aprovadas: ENCERRAMENTO AUTOMÁTICO IMEDIATO!
         if res.get("all_completed"):
             try:
-                client.chat_postMessage(
+                client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
                     channel=ticket["channel_id"],
                     thread_ts=ticket["thread_ts"],
                     text=mensagem_conclusao(updated_ticket)
@@ -1508,7 +1508,7 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
         logger.warning(f"Erro ao espelhar status no post principal: {e}")
 
     now_str = datetime.now().strftime("%d/%m às %Hh%M")
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
         channel=ticket["channel_id"],
         thread_ts=ticket["thread_ts"],
         text=f"✅ *{apprv.get('checklist_label') or apprv['role_title']}* aprovada por <@{user_id}> em {now_str}."
@@ -1527,7 +1527,7 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
         logger.error(f"Erro ao enviar feedback DM ao consultor: {e}")
 
     if res.get("all_completed"):
-        client.chat_postMessage(
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
             channel=ticket["channel_id"],
             thread_ts=ticket["thread_ts"],
             text=mensagem_conclusao(updated_ticket)
@@ -1806,7 +1806,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             f"➡️ As demais alçadas seguem em análise, para o consultor receber todos os ajustes de uma vez."
         )
 
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
         channel=channel_id,
         thread_ts=updated_ticket["thread_ts"],
         text=alert_msg
@@ -1814,7 +1814,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
 
     # Quando todas as alçadas decidiram: mensagem de encerramento e reação (✅ ou ❌) na mensagem inicial
     if res.get("all_completed"):
-        client.chat_postMessage(
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
             channel=channel_id,
             thread_ts=updated_ticket["thread_ts"],
             text=mensagem_conclusao(updated_ticket),
@@ -2180,7 +2180,7 @@ def handle_view_triagem_substituicao(ack, body, client, view):
         f"ℹ️ _O aprovador substituto já recebeu o card executivo para deliberação na DM e possui autorização imediata para aprovar ou reprovar esta solicitação._"
     )
 
-    client.chat_postMessage(
+    client.chat_postMessage(unfurl_links=False, unfurl_media=False, 
         channel=channel_id,
         thread_ts=updated_ticket["thread_ts"],
         text=audit_msg
