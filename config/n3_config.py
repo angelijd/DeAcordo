@@ -13,12 +13,13 @@ N3_MARCAR_APROVADORES = os.environ.get("N3_MARCAR_APROVADORES", "false").lower()
 N3_GENERICO = "N3 - Direto do Chalfun/Faleiros"
 
 # Modo alta demanda (true): essas exceções vão para o N3 de cada marca (tabela abaixo, só na Renovação).
-# Desligado (padrão): vão para os diretores Chalfun e Faleiros; qualquer um dos dois decide.
+# Desligado (padrão): vão para a diretoria N3 (lista abaixo). Com mais de um nome, qualquer um decide.
 MODO_ALTA_DEMANDA = os.environ.get("MODO_ALTA_DEMANDA", "false").lower() == "true"
 
+# Por ora só o Chalfun (regra em revisão). Para incluir o Faleiros:
+# {"nome": "Lucas Faleiros", "slack_id": "U04JBEWH421"},
 DIRETORES_N3 = [
-    {"nome": "Andre Chalfun", "slack_id": ""},
-    {"nome": "Lucas Faleiros", "slack_id": ""},
+    {"nome": "Andre Chalfun", "slack_id": "U01P9UZ8LTH"},
 ]
 
 # Regra por segmento (Ultra High / Low) desligada até o formulário perguntar o segmento da escola.

@@ -724,7 +724,7 @@ def executar_cobranca_pendencias(client) -> int:
         escola = t.get("escola", "Escola")
 
         aprovados = [
-            a["short_label"] for a in t.get("approvals", {}).values() if a["status"] != "pending"
+            a["short_label"] for a in t.get("approvals", {}).values() if a["status"] == "approved"
         ]
         aprovados_str = ", ".join(aprovados) if aprovados else "nenhuma alçada ainda"
 
