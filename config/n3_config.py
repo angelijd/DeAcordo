@@ -32,8 +32,7 @@ N3_POR_MARCA = [
     {"vertical": "CSE", "grupo": "SAE e Conquista", "nome": "Julia Beloni", "slack_id": "U0BEMGTBMT9"},
     {"vertical": "CSE", "grupo": "Arco Plus", "nome": "Livia Archeti", "slack_id": "U06TXM43MKN"},
     {"vertical": "CSP", "grupo": "COC", "nome": "Renato Judice", "slack_id": "U08SWETHQ90"},
-    # Slack ID ainda não informado: aparece só como nome.
-    {"vertical": "CSP", "grupo": "Geekie", "nome": "Andreia Moraes", "slack_id": ""},
+    {"vertical": "CSP", "grupo": "Geekie", "nome": "Andreia Moraes", "slack_id": "U06U63R4JPN"},
     {"vertical": "CSP", "grupo": "SAS", "nome": "Kassiopeya", "slack_id": "U056UACUTHB"},
     {"vertical": "CSP", "grupo": "Positivo", "nome": "Eduarda Fernandes", "slack_id": "U034AN776VD"},
     {"vertical": "CSP", "grupo": "SAE e Conquista", "nome": "Juliana Loures", "slack_id": "U095WTCNTFT"},
