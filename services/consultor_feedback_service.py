@@ -229,8 +229,7 @@ def send_consultor_rejection_dm(
     parcial = bool(rejection_data.get("parcial"))
     if ticket.get("status") == "rejected":
         proximos_passos = (
-            "Todas as alçadas já decidiram. Ajustes pedidos:\n" + _resumo_ajustes(ticket) + "\n\n"
-            "Faça os ajustes e envie um novo formulário no canal de negociações."
+            "Todas as alçadas já decidiram. Ajustes pedidos:\n" + _resumo_ajustes(ticket)
         )
     elif ticket.get("status") == "completed":
         proximos_passos = (
