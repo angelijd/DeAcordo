@@ -648,6 +648,8 @@ def handle_submission(ack, body, client):
 
     if not data.get("link_sf"):
         errors["link_sf_block"] = "Informe o Link da Oportunidade no SalesForce."
+    elif not re.search(r"(salesforce\.com|force\.com)", str(data.get("link_sf")), re.IGNORECASE):
+        errors["link_sf_block"] = "Cole o link da oportunidade no SalesForce (o endereço deve ser do salesforce.com ou force.com)."
 
     if not data.get("contexto_geral"):
         errors["contexto_geral_block"] = "Preencha o Contexto Geral da Escola/Negociação."
@@ -914,6 +916,55 @@ def handle_submission(ack, body, client):
             all_split_lines.append(sub)
     unified_quote_text = "\n".join(f"> {l}" if l.strip() else ">" for l in all_split_lines)
 
+    # Versão estruturada e escaneável do post no canal (renderizada por build_thread_blocks)
+    campos_post = [
+        ("Marcas", marcas_str or "-"),
+        ("Valor do Contrato", f"R$ {acv_limpo}" if acv_limpo != "-" else "-"),
+        ("CNPJ", cnpj_formatado),
+        ("INEP", inep_val),
+        ("Alunado", alunado_val),
+    ]
+    if rede_val == "sim":
+        campos_post.append(("Rede/Grupo", f"{data.get('nome_rede') or 'Sim'} ({data.get('cnpjs_rede') or 'sem CNPJ'})"))
+    if data.get("tem_divida") == "sim" and data.get("valor_divida"):
+        campos_post.append(("Dívida da Escola", f"R$ {divida_fmt}"))
+    if tipo_fluxo == FLUXO_RENOVACAO:
+        campos_post.extend([
+            ("% Reajuste Líquido", reajuste_display),
+            ("Aprovador do Simulador", aprovador_simulador_tag),
+            ("Aprovador N3", "\n".join(f"{n3['tag']} ({', '.join(n3['marcas'])})" for n3 in aprovadores_n3) or "Não mapeado"),
+        ])
+    elif marcas_com_inviab:
+        campos_post.extend([
+            ("Inviabilidade", ", ".join(f"{m} ({p})" for m, p in marcas_com_inviab)),
+            ("Aprovador Inviabilidade", aprovador_inviab_tag),
+        ])
+
+    links_post = []
+    if link_sf != "-":
+        links_post.append(f"🔗 <{link_sf}|SalesForce>")
+    if link_simulador != "-":
+        links_post.append(f"📎 {link_simulador}")
+
+    excecoes_post = []
+    for item in excecoes_detalhes:
+        aprovs = [a for a in (item.get("aprov_com_tag"), item.get("aprov_ops_tag")) if a and a != "-"]
+        aprovs = list(dict.fromkeys(aprovs))
+        excecoes_post.append(f"*{item['numero']}.* {item['nome']} → {', '.join(aprovs) or 'sem aprovador mapeado'}")
+
+    post_view = {
+        "titulo": f"{'🔄 Renovação' if tipo_fluxo == FLUXO_RENOVACAO else '🌱 Crescimento'} · {data.get('razao_social') or 'Escola'}",
+        "subtitulo": f"👤 Consultor: {consultor_tag}  ·  🧭 Líder: {lider_tag}  ·  📍 Frente: {data.get('frente') or '-'}",
+        "campos": campos_post,
+        "links": "  ·  ".join(links_post),
+        "excecoes": excecoes_post,
+    }
+
+    detalhes_thread_linhas = [f"*📝 Contexto Geral*\n{data.get('contexto_geral') or 'Não informado.'}"]
+    for item in excecoes_detalhes:
+        detalhes_thread_linhas.append(f"*🔹 Exceção {item['numero']}: {item['nome']}*\n_{item['contexto']}_")
+    detalhes_thread = "\n\n".join(detalhes_thread_linhas)
+
     # Mapeamento das Alçadas Individuais com Botões e Escopo de Aprovação
     approvals_list = []
 
@@ -1024,6 +1075,7 @@ def handle_submission(ack, body, client):
         "pct_reajuste_liquido": data.get("reajuste_liquido") if tipo_fluxo == FLUXO_RENOVACAO else None,
         "aprovador_simulador": aprovador_simulador_tag.replace("@", "").strip() if tipo_fluxo == FLUXO_RENOVACAO else "",
         "aprovador_n3_renovacao": ", ".join(n3["nome"] for n3 in aprovadores_n3),
+        "post_view": post_view,
     }
 
     # 1. Posta a MENSAGEM ÚNICA no canal
@@ -1057,8 +1109,21 @@ def handle_submission(ack, body, client):
         channel=channel_id,
         text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {data.get('razao_social')}",
         blocks=initial_blocks,
+        unfurl_links=False,
+        unfurl_media=False,
     )
     thread_ts = resp["ts"]
+
+    try:
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=detalhes_thread,
+            unfurl_links=False,
+            unfurl_media=False,
+        )
+    except Exception as e:
+        logger.warning(f"Erro ao postar os detalhes na thread: {e}")
 
     # Obtém permalink
     thread_permalink = None

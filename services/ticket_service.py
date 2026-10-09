@@ -563,6 +563,38 @@ def build_thread_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     unindo todos os dados do workflow no formato idêntico ao original e os botões interativos de deliberação.
     """
     blocks = []
+    post_view = (ticket.get("extra_data") or {}).get("post_view")
+    if post_view:
+        blocks.append({
+            "type": "header",
+            "text": {"type": "plain_text", "text": post_view["titulo"][:150], "emoji": True},
+        })
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": post_view["subtitulo"]}],
+        })
+        campos = post_view.get("campos") or []
+        for i in range(0, len(campos), 10):
+            blocks.append({
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*{label}*\n{valor or '-'}"[:2000]}
+                    for label, valor in campos[i:i + 10]
+                ],
+            })
+        if post_view.get("links"):
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": post_view["links"]}],
+            })
+        if post_view.get("excecoes"):
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Exceções* (contexto na thread)\n" + "\n".join(post_view["excecoes"])},
+            })
+        blocks.extend(build_approval_blocks(ticket))
+        return blocks
+
     text = ticket.get("details_text") or ticket.get("main_text_base") or ""
     if text:
         # Divide com segurança se exceder o limite de 3000 caracteres do Slack por seção
