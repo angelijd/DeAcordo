@@ -85,6 +85,12 @@ with tempfile.TemporaryDirectory() as tmp:
     assert action_ids(canal) == []
     assert build_thread_blocks(t)[0]["type"] != "header"
     assert "btn_decidir_minhas" in action_ids(build_thread_blocks(t))
+    assert ts.texto_card_thread(t).startswith("Aprovação pendente: ")
+    # Aprovar (opção B) pede confirmação antes de registrar
+    os.environ["POST_BOTOES"] = "por_alcada"
+    botoes = [e for b in build_thread_blocks(t) if b["type"] == "actions" for e in b["elements"] if e["action_id"].startswith("btn_aprovar_")]
+    os.environ.pop("POST_BOTOES")
+    assert botoes and all(b["confirm"]["confirm"]["text"] == "Sim, aprovar" for b in botoes)
 
     # Depois de aprovar e reprovar a exceção: concluída com aprovação parcial, sem botões
     approve_step(t["key"], "comercial", "U_LIDER", "lider")
@@ -93,6 +99,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert action_ids(blocks) == []
     # No canal, 1 ou mais reprovações = Reprovado, mesmo com aprovações
     assert "❌ Reprovado" in textos(build_main_post_blocks(res["ticket"]))
+    assert ts.texto_aviso_canal(res["ticket"]) == "🔄 Renovação · SEIS PRE-VESTIBULAR LTDA · Reprovado"
+    assert ts.metadata_ticket(res["ticket"])["event_payload"]["ticket_key"] == t["key"]
+    # Ajustes pedidos em lista numerada nativa
+    rich = [b for b in ts.blocos_conclusao(res["ticket"]) if b["type"] == "rich_text"]
+    assert not rich or rich[0]["elements"][0]["style"] == "ordered"
 
     # Post antigo (sem o layout novo) continua renderizando
     legado = dict(res["ticket"], extra_data={"post_view": {"titulo": "T", "subtitulo": "S", "campos": [("A", "1")]}})

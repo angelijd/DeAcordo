@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from config.triagem_config import USE_MOCK_USERS
+from services.ticket_service import confirmar_aprovacao
 
 logger = logging.getLogger("dm_approval_service")
 
@@ -110,6 +111,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
                         "value": f"{ticket_key}:{key}",
                         "text": {"type": "plain_text", "text": f"✅ Aprovar {short_label}", "emoji": True},
                         "style": "primary",
+                        "confirm": confirmar_aprovacao(apprv.get("checklist_label") or short_label, escola),
                     },
                     {
                         "type": "button",
@@ -135,7 +137,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             # Envia diretamente para o usuário
             msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                 channel=target_user_id,
-                text=f"Aprovação solicitada para {escola} ({short_label})",
+                text=f"Sua aprovação: {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
                 blocks=blocks,
             )
 
@@ -150,7 +152,7 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
                 if outro_id != target_user_id:
                     client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                         channel=outro_id,
-                        text=f"Aprovação solicitada para {escola} ({short_label})",
+                        text=f"Sua aprovação: {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
                         blocks=blocks,
                     )
 
@@ -270,6 +272,7 @@ def send_dm_substitute_card(
                     "value": f"{ticket_key}:{approval_key}",
                     "text": {"type": "plain_text", "text": f"✅ Aprovar {short_label}", "emoji": True},
                     "style": "primary",
+                    "confirm": confirmar_aprovacao(apprv.get("checklist_label") or short_label, escola),
                 },
                 {
                     "type": "button",
@@ -294,7 +297,7 @@ def send_dm_substitute_card(
 
         msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=target_user_id,
-            text=f"Aprovação solicitada como substituto para {escola} ({short_label})",
+            text=f"Sua aprovação (substituto): {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
             blocks=blocks,
         )
 

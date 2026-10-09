@@ -8,6 +8,7 @@ import logging
 from typing import Dict, Any, Tuple, Optional
 
 from config.triagem_config import USE_MOCK_USERS
+from services.ticket_service import lista_ajustes_rich_text
 
 logger = logging.getLogger("consultor_feedback_service")
 
@@ -33,17 +34,6 @@ def _arroba(nome: str) -> str:
     """Nome do consultor com @, sem duplicar quando já é uma menção do Slack (<@U...>)."""
     nome = nome or "Consultor"
     return nome if nome.startswith(("<@", "@")) else f"@{nome}"
-
-
-def _resumo_ajustes(ticket: Dict[str, Any]) -> str:
-    linhas = []
-    for a in ticket.get("approvals", {}).values():
-        if a.get("status") != "rejected":
-            continue
-        rotulo = a.get("checklist_label") or a.get("short_label") or a.get("role_title", "Alçada")
-        detalhe = f": _{a['details']}_" if a.get("details") else ""
-        linhas.append(f"• *{rotulo}* · {a.get('reason_label') or 'Reprovado'}{detalhe}")
-    return "\n".join(linhas)
 
 
 def send_consultor_progress_dm(
@@ -99,12 +89,13 @@ def send_consultor_progress_dm(
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": (
-                        f"{_arroba(consultor_name)}, todas as alçadas da escola *{escola}* deliberaram. Ajustes pedidos:\n"
-                        f"{_resumo_ajustes(ticket)}\n\n"
-                        f"*Pipeline ({approved_count}/{total_count} aprovadas):*\n{stepper_text}"
-                    )[:2900],
+                    "text": f"{_arroba(consultor_name)}, todas as alçadas da escola *{escola}* deliberaram. Ajustes pedidos:",
                 },
+            },
+            lista_ajustes_rich_text(ticket, com_quem=False),
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Pipeline ({approved_count}/{total_count} aprovadas):*\n{stepper_text}"[:2900]},
             },
             {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔗 <{permalink}|Ver os apontamentos na thread do canal>"}]},
         ]
@@ -191,7 +182,7 @@ def send_consultor_progress_dm(
                 ]
             }
         ])
-        msg_text = f"📋 Progresso da solicitação para {escola}: {last_label} aprovada."
+        msg_text = f"✅ {last_apprv.get('checklist_label') or last_label} aprovou · {escola} ({approved_count} de {total_count})"
 
     try:
         client.chat_postMessage(unfurl_links=False, unfurl_media=False,
@@ -228,7 +219,7 @@ def send_consultor_rejection_dm(
     parcial = bool(rejection_data.get("parcial"))
     if ticket.get("status") == "rejected":
         proximos_passos = (
-            "Todas as alçadas já decidiram. Ajustes pedidos:\n" + _resumo_ajustes(ticket)
+            "Todas as alçadas já decidiram. Ajustes pedidos:"
         )
     elif ticket.get("status") == "completed":
         proximos_passos = (
@@ -283,6 +274,7 @@ def send_consultor_rejection_dm(
                 )
             }
         },
+        *([lista_ajustes_rich_text(ticket, com_quem=False)] if ticket.get("status") == "rejected" else []),
         {
             "type": "context",
             "elements": [

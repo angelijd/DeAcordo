@@ -40,6 +40,11 @@ from services.ticket_service import (
     alcadas_do_usuario,
     reacao_conclusao,
     build_channel_notice_blocks,
+    texto_aviso_canal,
+    texto_card_thread,
+    texto_post_principal,
+    metadata_ticket,
+    blocos_conclusao,
 )
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
@@ -1194,13 +1199,11 @@ def handle_submission(ack, body, client):
             for apprv in approvals_list
         }
     }
-    tipo_fluxo_label_curto = "Crescimento" if tipo_fluxo == FLUXO_CRESCIMENTO else "Renovação"
-    texto_notificacao = f"Nova negociação [{tipo_fluxo_label_curto}]: {data.get('razao_social') or 'Escola'}"
 
     # 1. Canal: só a notificação (tipo, escola, CNPJ e status). Botões e detalhes ficam na thread.
     resp = client.chat_postMessage(
         channel=channel_id,
-        text=texto_notificacao,
+        text=texto_aviso_canal(temp_ticket),
         blocks=build_channel_notice_blocks(temp_ticket),
         unfurl_links=False,
         unfurl_media=False,
@@ -1235,8 +1238,9 @@ def handle_submission(ack, body, client):
         card_resp = client.chat_postMessage(
             channel=channel_id,
             thread_ts=thread_ts,
-            text=f"Aprovações: {ticket['escola']}",
+            text=texto_card_thread(ticket),
             blocks=build_thread_blocks(ticket),
+            metadata=metadata_ticket(ticket),
             unfurl_links=False,
             unfurl_media=False,
         )
@@ -1374,7 +1378,8 @@ def handle_dm_approval_action(ack, body, client):
                 channel=ticket["channel_id"],
                 ts=ticket["thread_ts"],
                 blocks=main_status_blocks,
-                text=f"Aprovações Arco: {updated_ticket['escola']}"
+                text=texto_post_principal(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.warning(f"Erro ao espelhar status no post principal: {e}")
@@ -1388,7 +1393,8 @@ def handle_dm_approval_action(ack, body, client):
                     channel=ticket["channel_id"],
                     ts=card_msg_ts,
                     blocks=updated_blocks,
-                    text=f"Status de Aprovações: {updated_ticket['escola']}"
+                    text=texto_card_thread(updated_ticket),
+                    metadata=metadata_ticket(updated_ticket)
                 )
             except Exception as e:
                 logger.error(f"Erro ao atualizar card da thread: {e}")
@@ -1399,7 +1405,8 @@ def handle_dm_approval_action(ack, body, client):
                 client.chat_postMessage(unfurl_links=False, unfurl_media=False,
                     channel=ticket["channel_id"],
                     thread_ts=ticket["thread_ts"],
-                    text=mensagem_conclusao(updated_ticket)
+                    text=mensagem_conclusao(updated_ticket),
+                    blocks=blocos_conclusao(updated_ticket)
                 )
                 client.reactions_add(
                     channel=ticket["channel_id"],
@@ -1493,7 +1500,8 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
                 channel=ticket["channel_id"],
                 ts=card_msg_ts,
                 blocks=updated_blocks,
-                text=f"Status de Aprovações: {updated_ticket['escola']}"
+                text=texto_card_thread(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar mensagem da thread: {e}")
@@ -1504,7 +1512,8 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
             channel=ticket["channel_id"],
             ts=ticket["thread_ts"],
             blocks=main_status_blocks,
-            text=f"Aprovações Arco: {updated_ticket['escola']}"
+            text=texto_post_principal(updated_ticket),
+            metadata=metadata_ticket(updated_ticket)
         )
     except Exception as e:
         logger.warning(f"Erro ao espelhar status no post principal: {e}")
@@ -1532,7 +1541,8 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
         client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=ticket["channel_id"],
             thread_ts=ticket["thread_ts"],
-            text=mensagem_conclusao(updated_ticket)
+            text=mensagem_conclusao(updated_ticket),
+            blocks=blocos_conclusao(updated_ticket)
         )
         try:
             client.reactions_add(
@@ -1819,6 +1829,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             channel=channel_id,
             thread_ts=updated_ticket["thread_ts"],
             text=mensagem_conclusao(updated_ticket),
+            blocks=blocos_conclusao(updated_ticket)
         )
         try:
             client.reactions_add(channel=channel_id, timestamp=updated_ticket["thread_ts"], name=reacao_conclusao(updated_ticket))
@@ -1834,7 +1845,8 @@ def handle_view_reprovar_ticket(ack, body, client, view):
                 channel=channel_id,
                 ts=card_msg_ts,
                 blocks=updated_blocks,
-                text=f"Status de Aprovações: {updated_ticket['escola']}"
+                text=texto_card_thread(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar card da thread pós-reprovação: {e}")
@@ -1846,7 +1858,8 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             channel=channel_id,
             ts=updated_ticket["thread_ts"],
             blocks=main_status_blocks,
-            text=f"Aprovações Arco: {updated_ticket['escola']}"
+            text=texto_post_principal(updated_ticket),
+            metadata=metadata_ticket(updated_ticket)
         )
     except Exception as e:
         logger.warning(f"Erro ao atualizar post principal pós-reprovação: {e}")
@@ -2196,7 +2209,8 @@ def handle_view_triagem_substituicao(ack, body, client, view):
                 channel=channel_id,
                 ts=card_msg_ts,
                 blocks=updated_blocks,
-                text=f"Status de Aprovações: {updated_ticket['escola']}"
+                text=texto_card_thread(updated_ticket),
+                metadata=metadata_ticket(updated_ticket)
             )
         except Exception as e:
             logger.error(f"Erro ao atualizar card da thread pós-substituição: {e}")
