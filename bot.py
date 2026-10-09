@@ -988,9 +988,12 @@ def handle_submission(ack, body, client):
         if item.get("aprov_com_nome") or item.get("aprov_ops_nome"):
             continue
         if "não precisa" in str(item.get("regra_comercial", "")).lower():
-            excecoes_sem_alcada.append(f"➖ Exceção {item['numero']} · {item['nome'][:70]} · não precisa de aprovação")
+            linha = f"➖ Exceção {item['numero']} · {item['nome'][:70]} · não precisa de aprovação"
         else:
-            excecoes_sem_alcada.append(f"⚠️ Exceção {item['numero']} · {item['nome'][:70]} · sem aprovador definido na regra")
+            linha = f"⚠️ Exceção {item['numero']} · {item['nome'][:70]} · sem aprovador definido na regra"
+        if item.get("contexto"):
+            linha += "\n> 📝 " + str(item["contexto"])[:1500].replace("\n", "\n> ")
+        excecoes_sem_alcada.append(linha)
 
     post_view = {
         "fluxo": "Renovação" if tipo_fluxo == FLUXO_RENOVACAO else "Crescimento",
@@ -1002,20 +1005,9 @@ def handle_submission(ack, body, client):
         "simulador_url": simulador_url,
         "cnpj": cnpj_formatado,
         "itens": itens_resumo,
+        "contexto_geral": data.get("contexto_geral") or "",
+        "contextos_excecoes": {str(item["numero"]): item.get("contexto") or "" for item in excecoes_detalhes},
     }
-
-    dados_escola = [f"CNPJ: {cnpj_formatado}", f"INEP: {inep_val}"]
-    if alunado_val and alunado_val != "-":
-        dados_escola.append(f"Alunado: {alunado_val}")
-    if rede_val == "sim":
-        dados_escola.append(f"Rede: {data.get('nome_rede') or 'Sim'} ({data.get('cnpjs_rede') or 'sem CNPJ'})")
-    detalhes_thread_linhas = [
-        "*🏫 Dados da escola*\n" + "  ·  ".join(dados_escola),
-        f"*📝 Contexto Geral*\n{data.get('contexto_geral') or 'Não informado.'}",
-    ]
-    for item in excecoes_detalhes:
-        detalhes_thread_linhas.append(f"*🔹 Exceção {item['numero']}: {item['nome']}*\n_{item['contexto']}_")
-    detalhes_thread = "\n\n".join(detalhes_thread_linhas)
 
     # Mapeamento das Alçadas Individuais com Botões e Escopo de Aprovação
     approvals_list = []
@@ -1247,18 +1239,6 @@ def handle_submission(ack, body, client):
         update_ticket_card_ts(ticket["key"], card_resp["ts"])
     except Exception as e:
         logger.error(f"Erro ao postar o card de aprovação na thread: {e}")
-
-    # 3. Thread: dados da escola e contexto de cada exceção
-    try:
-        client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=thread_ts,
-            text=detalhes_thread,
-            unfurl_links=False,
-            unfurl_media=False,
-        )
-    except Exception as e:
-        logger.warning(f"Erro ao postar os detalhes na thread: {e}")
 
     # Envia os cards executivos individuais na DM privada de cada aprovador
     try:

@@ -600,6 +600,14 @@ def _card_na_thread(ticket: Dict[str, Any]) -> bool:
     return bool(pv.get("fluxo")) and (ticket.get("card_na_thread") or bool(card and card != ticket.get("thread_ts")))
 
 
+def _cnpj_formatado(cnpj: Any) -> str:
+    cnpj = str(cnpj or "-")
+    digitos = re.sub(r"\D", "", cnpj)
+    if len(digitos) == 14:
+        return f"{digitos[:2]}.{digitos[2:5]}.{digitos[5:8]}/{digitos[8:12]}-{digitos[12:]}"
+    return cnpj
+
+
 def status_canal(ticket: Dict[str, Any]) -> str:
     """Status da notificação no canal: 1 ou mais reprovações = Reprovado, mesmo com aprovações."""
     if reprovacoes(ticket):
@@ -615,10 +623,7 @@ def build_channel_notice_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     fluxo = pv.get("fluxo") or "Solicitação"
     emoji_fluxo = "🔄" if fluxo == "Renovação" else "🌱"
     escola = pv.get("escola") or ticket.get("escola") or "Escola"
-    cnpj = str(pv.get("cnpj") or ticket.get("cnpj") or (ticket.get("extra_data") or {}).get("cnpj") or "-")
-    digitos = re.sub(r"\D", "", cnpj)
-    if len(digitos) == 14:
-        cnpj = f"{digitos[:2]}.{digitos[2:5]}.{digitos[5:8]}/{digitos[8:12]}-{digitos[12:]}"
+    cnpj = _cnpj_formatado(pv.get("cnpj") or ticket.get("cnpj") or (ticket.get("extra_data") or {}).get("cnpj"))
     return [{
         "type": "section",
         "text": {
@@ -628,8 +633,28 @@ def build_channel_notice_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     }]
 
 
+def _contexto_excecao(ticket: Dict[str, Any], key: str, vistos: set) -> str:
+    """Contexto da exceção logo abaixo da sua linha (só na 1ª alçada da exceção), antes dos botões."""
+    m = re.match(r"excecao_(\d+)_", key or "")
+    if not m or m.group(1) in vistos:
+        return ""
+    vistos.add(m.group(1))
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    ctx = str((pv.get("contextos_excecoes") or {}).get(m.group(1)) or "").strip()
+    if not ctx:
+        return ""
+    if len(ctx) > 1500:
+        ctx = ctx[:1500] + "…"
+    return "\n> 📝 " + ctx.replace("\n", "\n> ")
+
+
+def _rodape_blocos(na_thread: bool) -> List[Dict[str, Any]]:
+    texto = _rodape_card(na_thread)
+    return [{"type": "context", "elements": [{"type": "mrkdwn", "text": texto}]}] if texto else []
+
+
 def _rodape_card(na_thread: bool) -> str:
-    return "📝 Contexto e dados da escola na próxima mensagem." if na_thread else "Contexto, CNPJ e INEP estão na thread."
+    return "" if na_thread else "Contexto, CNPJ e INEP estão na thread."
 
 
 def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -661,6 +686,10 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "url": pv["simulador_url"],
                 }],
             })
+        if pv.get("contexto_geral") is not None:
+            # Abaixo do simulador: escola, CNPJ e contexto (antes ficavam numa 3ª mensagem da thread)
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"🏫 *{pv.get('escola')}*  ·  CNPJ {_cnpj_formatado(pv.get('cnpj'))}"[:2900]}})
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"📝 *Contexto da negociação*\n{pv.get('contexto_geral') or 'Não informado.'}"[:2900]}})
     elif pv.get("resumo") or pv.get("simulador_url"):
         resumo = {"type": "section", "text": {"type": "mrkdwn", "text": (pv.get("resumo") or " ")[:2900]}}
         if pv.get("simulador_url"):
@@ -681,7 +710,7 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Opção B: bloco de aprovações no formato anterior (seção + botões por alçada, botões da triagem)
         blocks.extend(build_approval_blocks(ticket))
         blocks.extend(_secoes_de_linhas(list(pv.get("excecoes_sem_alcada") or [])))
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _rodape_card(na_thread)}]})
+        blocks.extend(_rodape_blocos(na_thread))
         return blocks
 
     blocks.append({"type": "divider"})
@@ -689,8 +718,9 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     por_alcada = False
     linhas_soltas: List[str] = []
+    vistos_ctx: set = set()
     for key, apprv in approvals.items():
-        linha = _linha_alcada(apprv, reprovado)
+        linha = _linha_alcada(apprv, reprovado) + _contexto_excecao(ticket, key, vistos_ctx)
         if por_alcada and apprv.get("status") == "pending":
             blocks.extend(_secoes_de_linhas(linhas_soltas))
             linhas_soltas = []
@@ -723,7 +753,7 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         elementos.append(_menu_triagem(ticket["key"]))
         blocks.append({"type": "actions", "block_id": "post_actions", "elements": elementos})
 
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _rodape_card(na_thread)}]})
+    blocks.extend(_rodape_blocos(na_thread))
     return blocks
 
 
@@ -847,6 +877,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         })
         blocks.append({"type": "divider"})
 
+    vistos_ctx: set = set()
     for key, apprv in approvals.items():
         role_title = apprv["role_title"]
         approver_name = apprv["approver_name"]
@@ -858,6 +889,7 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
             sub_until = apprv.get("substitute_until", "")
             orig_name = apprv.get("original_approver_name", "")
             substitute_badge = f"\n_🔄 Substituto temporário até {sub_until} (Titular ausente: @{orig_name})_"
+        substitute_badge += _contexto_excecao(ticket, key, vistos_ctx)
 
         if status == "pending":
             if is_rejected:
