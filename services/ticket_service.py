@@ -551,6 +551,22 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     return blocks
 
 
+# Paleta usada para dar uma barra colorida lateral ao card de cada ticket no canal,
+# facilitando diferenciar visualmente tickets diferentes quando aparecem intercalados.
+_TICKET_ACCENT_PALETTE = ["#2EB67D", "#ECB22E", "#36C5F0", "#E01E5A", "#6B46C1", "#F2994A"]
+
+
+def ticket_accent_color(ticket_key: str) -> str:
+    """Cor estável (hash simples da chave) para a barra lateral do card do ticket."""
+    idx = sum(ord(c) for c in ticket_key) % len(_TICKET_ACCENT_PALETTE)
+    return _TICKET_ACCENT_PALETTE[idx]
+
+
+def as_colored_attachment(ticket_key: str, blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Envolve os blocks num attachment colorido (barra lateral) para postMessage/update."""
+    return [{"color": ticket_accent_color(ticket_key), "blocks": blocks}]
+
+
 def build_thread_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Gera os blocos para a mensagem única do ticket no canal,
