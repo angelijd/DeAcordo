@@ -608,8 +608,6 @@ def handle_submission(ack, body, client):
         errors["frente_block"] = "Selecione uma Frente."
     if not data.get("lider"):
         errors["lider_block"] = "Informe o Líder direto do Consultor."
-    elif data.get("lider") == (data.get("consultor") or body["user"]["id"]):
-        errors["lider_block"] = "O Líder Direto não pode ser o mesmo usuário do Consultor."
     if not data.get("marcas"):
         errors["marcas_block"] = "Selecione pelo menos uma Marca."
 
