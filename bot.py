@@ -25,6 +25,7 @@ from services.ticket_service import (
     substitute_approver,
     build_thread_blocks,
     build_main_post_blocks,
+    as_colored_attachment,
     update_ticket_card_ts,
     executar_cobranca_pendencias,
     cobrar_pendencias_de_ticket,
@@ -1047,7 +1048,7 @@ def handle_submission(ack, body, client):
     resp = client.chat_postMessage(
         channel=channel_id,
         text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {data.get('razao_social')}",
-        blocks=initial_blocks,
+        attachments=as_colored_attachment(temp_ticket["escola"], initial_blocks),
     )
     thread_ts = resp["ts"]
 
@@ -1080,7 +1081,7 @@ def handle_submission(ack, body, client):
         client.chat_update(
             channel=channel_id,
             ts=thread_ts,
-            blocks=real_blocks,
+            attachments=as_colored_attachment(ticket["escola"], real_blocks),
             text=f"Aprovações Arco CE 2027 [{tipo_fluxo_label_curto}]: {ticket['escola']}"
         )
     except Exception as e:
@@ -1214,7 +1215,7 @@ def handle_dm_approval_action(ack, body, client):
             client.chat_update(
                 channel=ticket["channel_id"],
                 ts=ticket["thread_ts"],
-                blocks=main_status_blocks,
+                attachments=as_colored_attachment(updated_ticket["escola"], main_status_blocks),
                 text=f"Aprovações Arco: {updated_ticket['escola']}"
             )
         except Exception as e:
@@ -1228,7 +1229,7 @@ def handle_dm_approval_action(ack, body, client):
                 client.chat_update(
                     channel=ticket["channel_id"],
                     ts=card_msg_ts,
-                    blocks=updated_blocks,
+                    attachments=as_colored_attachment(updated_ticket["escola"], updated_blocks),
                     text=f"Status de Aprovações: {updated_ticket['escola']}"
                 )
             except Exception as e:
@@ -1324,7 +1325,7 @@ def handle_thread_approval_action(ack, body, client):
             client.chat_update(
                 channel=ticket["channel_id"],
                 ts=card_msg_ts,
-                blocks=updated_blocks,
+                attachments=as_colored_attachment(updated_ticket["escola"], updated_blocks),
                 text=f"Status de Aprovações: {updated_ticket['escola']}"
             )
         except Exception as e:
@@ -1335,7 +1336,7 @@ def handle_thread_approval_action(ack, body, client):
         client.chat_update(
             channel=ticket["channel_id"],
             ts=ticket["thread_ts"],
-            blocks=main_status_blocks,
+            attachments=as_colored_attachment(updated_ticket["escola"], main_status_blocks),
             text=f"Aprovações Arco: {updated_ticket['escola']}"
         )
     except Exception as e:
@@ -1552,7 +1553,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
             client.chat_update(
                 channel=channel_id,
                 ts=card_msg_ts,
-                blocks=updated_blocks,
+                attachments=as_colored_attachment(updated_ticket["escola"], updated_blocks),
                 text=f"Status de Aprovações: {updated_ticket['escola']}"
             )
         except Exception as e:
@@ -1564,7 +1565,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
         client.chat_update(
             channel=channel_id,
             ts=updated_ticket["thread_ts"],
-            blocks=main_status_blocks,
+            attachments=as_colored_attachment(updated_ticket["escola"], main_status_blocks),
             text=f"Aprovações Arco: {updated_ticket['escola']}"
         )
     except Exception as e:
@@ -1906,7 +1907,7 @@ def handle_view_triagem_substituicao(ack, body, client, view):
             client.chat_update(
                 channel=channel_id,
                 ts=card_msg_ts,
-                blocks=updated_blocks,
+                attachments=as_colored_attachment(updated_ticket["escola"], updated_blocks),
                 text=f"Status de Aprovações: {updated_ticket['escola']}"
             )
         except Exception as e:
