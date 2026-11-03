@@ -49,11 +49,13 @@ from services.ticket_service import (
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
 from services.substitution_service import registrar_substituicao, get_active_substitute
+from services.painel_service import postar_painel, atualizar_painel
 from views.modals import (
     build_aprovacoes_modal,
     extract_modal_values,
     build_reprovar_modal,
     build_triagem_substituicao_modal,
+    build_triagem_escolher_ticket_modal,
     MARCAS_CORE,
     MARCAS_PLUS,
 )
@@ -254,7 +256,16 @@ def handle_post_button_command(ack, body, client):
                     },
                     "action_id": "btn_abrir_modal_aprovacao",
                     "style": "primary",
-                }
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "🔄 Substituir Aprovador (@triagem)",
+                        "emoji": True,
+                    },
+                    "action_id": "btn_painel_substituicao",
+                },
             ],
         },
         {
@@ -692,9 +703,9 @@ def handle_submission(ack, body, client):
             if val is None or str(val).strip() == "":
                 errors[b_id] = f"Informe o percentual de inviabilidade para a marca {m}."
 
-    # Simulador XLSX obrigatório
-    if not data.get("simulador_files") and not data.get("simulador_fallback"):
-        errors["simulador_block"] = "O anexo do arquivo do Simulador em formato XLSX é obrigatório."
+    sim_link = data.get("simulador_link") or ""
+    if not sim_link.startswith(("http://", "https://")):
+        errors["simulador_block"] = "Cole o link do Simulador no Google Drive (começando com https://)."
 
     if errors:
         ack(response_action="errors", errors=errors)
@@ -839,16 +850,8 @@ def handle_submission(ack, body, client):
 
     # Links: SalesForce e Simulador
     link_sf = data.get('link_sf') or '-'
-    sim_files = data.get("simulador_files", [])
-    if sim_files:
-        primeiro_arq = sim_files[0]
-        nome_arq = primeiro_arq.get("name") or "Simulador.xlsx"
-        url_arq = primeiro_arq.get("permalink") or primeiro_arq.get("url_private") or "#"
-        link_simulador = f"<{url_arq}|{nome_arq}>"
-    elif data.get("simulador_fallback"):
-        link_simulador = data["simulador_fallback"]
-    else:
-        link_simulador = "-"
+    simulador_url = data.get("simulador_link") or ""
+    link_simulador = f"<{simulador_url}|Simulador>" if simulador_url else "-"
 
     # Textos de Inviabilidade Core e Plus
     nomes_marcas_inviab = ", ".join([m for m, _ in marcas_com_inviab]) if marcas_com_inviab else "n/a"
@@ -964,8 +967,6 @@ def handle_submission(ack, body, client):
     pessoas = [f"👤 {consultor_tag}", f"🧭 Líder {lider_tag}"]
     if link_sf != "-":
         pessoas.append(f"🔗 <{link_sf}|SalesForce>")
-    # Arquivo do Slack vira botão (link no texto faz o Slack mostrar a prévia grande do XLSX)
-    simulador_url = url_arq if sim_files and url_arq != "#" else ""
     if link_simulador != "-" and not simulador_url:
         pessoas.append(f"📎 {link_simulador}")
 
@@ -1561,7 +1562,7 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
 
 @app.action("btn_abrir_simulador")
 def handle_btn_abrir_simulador(ack):
-    """Botão de link do XLSX do simulador: o Slack abre o arquivo, aqui só confirma o clique."""
+    """Botão de link do simulador: o Slack abre o link, aqui só confirma o clique."""
     ack()
 
 
@@ -2028,33 +2029,53 @@ def handle_cmd_substituir_aprovador(ack, body, client):
         )
         return
 
-    target_ticket = None
-    if text:
-        target_ticket = get_ticket(text.strip())
+    target_ticket = get_ticket(text) if text else None
+    if target_ticket and target_ticket.get("status") == "pending":
+        modal = build_triagem_substituicao_modal(
+            ticket=target_ticket,
+            current_user_id=user_id,
+            channel_id=channel_id,
+        )
+    else:
+        modal = build_triagem_escolher_ticket_modal(get_pending_tickets(), user_id, channel_id)
+    safe_views_open(client, body["trigger_id"], modal)
 
-    if not target_ticket:
-        pendings = get_pending_tickets()
-        for p in reversed(pendings):
-            if p.get("channel_id") == channel_id:
-                target_ticket = p
-                break
-        if not target_ticket and pendings:
-            target_ticket = pendings[-1]
 
-    if not target_ticket:
+@app.action("btn_painel_substituicao")
+def handle_btn_painel_substituicao(ack, body, client):
+    """Botão do painel fixo do canal: a @triagem troca o aprovador sem entrar na thread."""
+    ack()
+    user_id = body["user"]["id"]
+    user_name = body["user"].get("name") or body["user"].get("username") or ""
+    channel_id = body.get("channel", {}).get("id") or DEFAULT_CHANNEL_ID
+
+    if not is_user_triagem(user_id, user_name):
         client.chat_postEphemeral(
             channel=channel_id,
             user=user_id,
-            text="⚠️ Nenhuma solicitação pendente encontrada para substituição."
+            text="⛔ *Acesso Restrito ao Perfil @triagem:*\nApenas membros autorizados da Triagem têm permissão para substituir aprovadores por ausência temporária."
         )
         return
 
-    modal = build_triagem_substituicao_modal(
-        ticket=target_ticket,
-        current_user_id=user_id,
-        channel_id=channel_id,
-    )
+    modal = build_triagem_escolher_ticket_modal(get_pending_tickets(), user_id, channel_id)
     safe_views_open(client, body["trigger_id"], modal)
+
+
+@app.action("triagem_ticket_select")
+def handle_triagem_ticket_select(ack, body, client):
+    """Ao escolher o ticket, troca o modal pelo de substituição daquele ticket."""
+    ack()
+    view = body["view"]
+    metadata = json.loads(view.get("private_metadata", "{}"))
+    ticket = get_ticket(body["actions"][0]["selected_option"]["value"])
+    if not ticket:
+        return
+    modal = build_triagem_substituicao_modal(
+        ticket=ticket,
+        current_user_id=metadata.get("current_user_id") or body["user"]["id"],
+        channel_id=metadata.get("channel_id") or DEFAULT_CHANNEL_ID,
+    )
+    safe_views_update(client, view["id"], modal)
 
 
 @app.view("modal_triagem_substituicao")
@@ -2068,7 +2089,8 @@ def handle_view_triagem_substituicao(ack, body, client, view):
     metadata = json.loads(view.get("private_metadata") or "{}")
 
     ticket_key = metadata.get("ticket_key")
-    channel_id = metadata.get("channel_id") or DEFAULT_CHANNEL_ID
+    ticket_for_channel = get_ticket(metadata.get("ticket_key", "")) or {}
+    channel_id = ticket_for_channel.get("channel_id") or metadata.get("channel_id") or DEFAULT_CHANNEL_ID
     user_id = body["user"]["id"]
     user_name = body["user"].get("name") or body["user"].get("username") or "Triagem"
 
@@ -2257,6 +2279,19 @@ def handle_msg_cobranca(message, say, client):
     say(f"📢 *Cobrança Inteligente:* {total} lembrete(s) disparado(s) para alçadas pendentes nas threads ativas.")
 
 
+@app.command("/postar-painel")
+def handle_cmd_postar_painel(ack, body, client):
+    """Posta (e tenta fixar) o painel de dados macro no canal atual."""
+    ack()
+    postar_painel(client, body["channel_id"])
+
+
+@app.message("!painel")
+def handle_msg_painel(message, client):
+    """Mesmo que /postar-painel, por palavra-chave (não exige cadastrar comando novo no Slack)."""
+    postar_painel(client, message["channel"])
+
+
 # =========================================================================
 # 6. INICIALIZAÇÃO DO BOT & AGENDADOR VIA SOCKET MODE
 # =========================================================================
@@ -2270,16 +2305,12 @@ if __name__ == "__main__":
         bg_scheduler = BackgroundScheduler()
         bg_scheduler.add_job(
             lambda: executar_cobranca_pendencias(app.client),
-            CronTrigger(hour=9, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
-            id="cobranca_09h"
+            CronTrigger(hour=10, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
+            id="cobranca_10h"
         )
-        bg_scheduler.add_job(
-            lambda: executar_cobranca_pendencias(app.client),
-            CronTrigger(hour=14, minute=0, day_of_week="mon-fri", timezone="America/Sao_Paulo"),
-            id="cobranca_14h"
-        )
+        bg_scheduler.add_job(lambda: atualizar_painel(app.client), "interval", minutes=1, id="painel_macro")
         bg_scheduler.start()
-        logger.info("⏰ Agendador de Cobrança Inteligente ativo (09:00 e 14:00, horário de Brasília, seg-sex). DMs só saem para SLA vencido.")
+        logger.info("⏰ Agendador de Cobrança Inteligente ativo (1x ao dia às 10:00, horário de Brasília, seg-sex). DMs só saem para SLA vencido.")
     except Exception as e:
         logger.warning(f"Aviso ao iniciar BackgroundScheduler: {e}")
 

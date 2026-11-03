@@ -611,7 +611,6 @@ def _menu_triagem(ticket_key: str) -> Dict[str, Any]:
         "type": "overflow",
         "action_id": "triagem_menu",
         "options": [
-            {"text": {"type": "plain_text", "text": "🔄 Substituir aprovador (triagem)", "emoji": True}, "value": f"sub:{ticket_key}"},
             {"text": {"type": "plain_text", "text": "🔔 Cobrar pendências (triagem)", "emoji": True}, "value": f"cob:{ticket_key}"},
         ],
     }
@@ -1044,12 +1043,6 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": "actions",
             "block_id": "triagem_actions_block",
             "elements": [
-                {
-                    "type": "button",
-                    "action_id": "btn_triagem_substituicao",
-                    "value": ticket["key"],
-                    "text": {"type": "plain_text", "text": "🔄 Substituir Aprovador por Ausência", "emoji": True}
-                },
                 {
                     "type": "button",
                     "action_id": "btn_triagem_cobrar_ticket",

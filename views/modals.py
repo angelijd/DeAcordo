@@ -1,6 +1,6 @@
 import re
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from config.exceptions_rules import ALL_EXCEPTIONS_LIST
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO
 from utils.currency_words import valor_para_extenso, format_real_input
@@ -762,20 +762,22 @@ def build_aprovacoes_modal(
     blocks.append({"type": "divider"})
 
     # -------------------------------------------------------------
-    # 18. Simulador Obrigatório em XLSX (Botão Nativo de Upload)
+    # 18. Simulador Obrigatório (link do Google Drive)
     # -------------------------------------------------------------
+    simulador_elem = {
+        "type": "url_text_input",
+        "action_id": "simulador_link_input",
+        "placeholder": {"type": "plain_text", "text": "https://drive.google.com/..."},
+    }
+    if saved_values.get("simulador_link"):
+        simulador_elem["initial_value"] = saved_values["simulador_link"]
     blocks.append({
         "type": "input",
         "block_id": "simulador_block",
         "optional": False,
-        "element": {
-            "type": "file_input",
-            "action_id": "simulador_file_input",
-            "filetypes": ["xlsx"],
-            "max_files": 1,
-        },
-        "label": {"type": "plain_text", "text": "📁 Simulador (Upload do Arquivo):"},
-        "hint": {"type": "plain_text", "text": "Baixe o simulador em XLSX e clique no botão 'Choose files' para anexá-lo aqui."},
+        "element": simulador_elem,
+        "label": {"type": "plain_text", "text": "🔗 Link do Simulador (Drive):"},
+        "hint": {"type": "plain_text", "text": "Cole o link do simulador no Google Drive, com acesso liberado para os aprovadores."},
     })
 
     return {
@@ -888,10 +890,7 @@ def extract_modal_values(view_state: Dict[str, Any], num_exceptions: int) -> Dic
         res[f"excecao_{i}"] = get_selected(f"excecao_{i}_block", f"excecao_{i}_select")
         res[f"contexto_excecao_{i}"] = get_val(f"contexto_excecao_{i}_block", f"contexto_excecao_{i}_input")
 
-    # Simulador XLSX
-    sim_data = values.get("simulador_block", {}).get("simulador_file_input", {})
-    res["simulador_files"] = sim_data.get("files", [])
-    res["simulador_fallback"] = values.get("simulador_block", {}).get("simulador_fallback_input", {}).get("value")
+    res["simulador_link"] = (get_val("simulador_block", "simulador_link_input") or "").strip()
 
     return res
 
@@ -987,6 +986,49 @@ def build_reprovar_modal(
         "submit": {"type": "plain_text", "text": "Confirmar Reprovação"},
         "close": {"type": "plain_text", "text": "Cancelar"},
         "private_metadata": json.dumps(metadata),
+        "blocks": blocks,
+    }
+
+
+def build_triagem_escolher_ticket_modal(
+    pending_tickets: List[Dict[str, Any]],
+    current_user_id: str,
+    channel_id: str,
+) -> Dict[str, Any]:
+    """Primeiro passo da substituição fora da thread: a @triagem escolhe o ticket pendente."""
+    options = []
+    for t in reversed(pending_tickets[-100:]):
+        tipo = ((t.get("extra_data") or {}).get("tipo_fluxo") or "crescimento").capitalize()
+        pendentes = [a.get("approver_name") for a in (t.get("approvals") or {}).values() if a.get("status") == "pending"]
+        texto = f"{t.get('escola', '-')} · {tipo} · aguardando {', '.join(n for n in pendentes if n)}"
+        options.append({"text": {"type": "plain_text", "text": texto[:75]}, "value": t["key"]})
+
+    blocks = [{
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "🔄 *Substituição de Aprovador por Ausência (@triagem)*\nEscolha a solicitação pendente. Em seguida você escolhe a alçada e o substituto."},
+    }]
+    if options:
+        blocks.append({
+            "type": "input",
+            "block_id": "triagem_ticket_block",
+            "dispatch_action": True,
+            "element": {
+                "type": "static_select",
+                "action_id": "triagem_ticket_select",
+                "placeholder": {"type": "plain_text", "text": "Selecione a solicitação"},
+                "options": options,
+            },
+            "label": {"type": "plain_text", "text": "Solicitação pendente:"},
+        })
+    else:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "⚠️ Nenhuma solicitação pendente no momento."}})
+
+    return {
+        "type": "modal",
+        "callback_id": "modal_triagem_escolher_ticket",
+        "title": {"type": "plain_text", "text": "Substituir Aprovador"},
+        "close": {"type": "plain_text", "text": "Cancelar"},
+        "private_metadata": json.dumps({"channel_id": channel_id, "current_user_id": current_user_id}),
         "blocks": blocks,
     }
 

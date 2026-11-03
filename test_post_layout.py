@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert action_ids(blocks_b) == [
         "btn_aprovar_comercial", "btn_reprovar_comercial",
         "btn_aprovar_excecao_1_ops", "btn_reprovar_excecao_1_ops",
-        "btn_triagem_substituicao", "btn_triagem_cobrar_ticket",
+        "btn_triagem_cobrar_ticket",
     ]
     os.environ.pop("POST_BOTOES")
 
