@@ -8,6 +8,7 @@ import logging
 from typing import Dict, Any, Tuple, Optional
 
 from config.triagem_config import USE_MOCK_USERS
+from services.ticket_service import lista_ajustes_rich_text
 
 logger = logging.getLogger("consultor_feedback_service")
 
@@ -27,6 +28,12 @@ def _resolve_consultor_target(ticket: Dict[str, Any], fallback_user_id: str = ""
         return fallback_user_id, True, consultor_name
 
     return None, False, consultor_name
+
+
+def _arroba(nome: str) -> str:
+    """Nome do consultor com @, sem duplicar quando já é uma menção do Slack (<@U...>)."""
+    nome = nome or "Consultor"
+    return nome if nome.startswith(("<@", "@")) else f"@{nome}"
 
 
 def send_consultor_progress_dm(
@@ -52,6 +59,8 @@ def send_consultor_progress_dm(
     total_count = len(approvals)
     approved_count = sum(1 for a in approvals.values() if a.get("status") == "approved")
     all_completed = (ticket.get("status") == "completed") or (approved_count == total_count and total_count > 0)
+    reprovadas = [a.get("short_label", "Exceção") for a in approvals.values() if a.get("parcial") and a.get("status") == "rejected"]
+    parcial = bool(reprovadas)
 
     # Constrói o Stepper visual com ícones e status
     stepper_lines = []
@@ -73,18 +82,42 @@ def send_consultor_progress_dm(
 
     stepper_text = "\n".join(stepper_lines)
 
-    if all_completed:
-        # Celebração de 100% de Aprovação
+    if ticket.get("status") == "rejected":
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text", "text": "❌ Solicitação Reprovada (ajustes necessários)", "emoji": True}},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"{_arroba(consultor_name)}, todas as alçadas da escola *{escola}* deliberaram. Ajustes pedidos:",
+                },
+            },
+            lista_ajustes_rich_text(ticket, com_quem=False),
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Pipeline ({approved_count}/{total_count} aprovadas):*\n{stepper_text}"[:2900]},
+            },
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔗 <{permalink}|Ver os apontamentos na thread do canal>"}]},
+        ]
+        msg_text = f"❌ Sua solicitação para {escola} precisa de ajustes."
+    elif all_completed:
+        if parcial:
+            abertura = (
+                f"{_arroba(consultor_name)}, todas as alçadas da escola *{escola}* deliberaram. "
+                f"Exceções reprovadas, que ficam fora do contrato: *{', '.join(reprovadas)}*.\n\n"
+            )
+        else:
+            abertura = f"Parabéns, {_arroba(consultor_name)}! Todas as alçadas necessárias deram o aceite para a escola *{escola}*!\n\n"
         blocks = [
             {
                 "type": "header",
-                "text": {"type": "plain_text", "text": "🎉 Solicitação 100% Aprovada!", "emoji": True}
+                "text": {"type": "plain_text", "text": "🟡 Solicitação Concluída (aprovação parcial)" if parcial else "🎉 Solicitação 100% Aprovada!", "emoji": True}
             }
         ]
         if is_mock:
             blocks.append({
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"🧪 *[MODO DE TESTE]* Simulando feedback para o Consultor: *@{consultor_name}*"}]
+                "elements": [{"type": "mrkdwn", "text": f"🧪 *[MODO DE TESTE]* Simulando feedback para o Consultor: *{_arroba(consultor_name)}*"}]
             })
         blocks.extend([
             {
@@ -92,9 +125,11 @@ def send_consultor_progress_dm(
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        f"Parabéns, @{consultor_name}! Todas as alçadas necessárias deram o aceite para a escola *{escola}*!\n\n"
-                        f"*Pipeline de Aprovação Concluído ({approved_count}/{total_count}):*\n{stepper_text}\n\n"
-                        f"📄 *Próximo Passo:* O ticket foi formalmente concluído no canal de negociações e a proposta está 100% liberada para emissão e assinatura de contrato."
+                        abertura
+                        + f"*Pipeline de Aprovação Concluído ({approved_count}/{total_count}):*\n{stepper_text}\n\n"
+                        + ("📄 *Próximo Passo:* Você pode acessar as deliberações na thread."
+                           if parcial else
+                           "📄 *Próximo Passo:* O ticket foi formalmente concluído no canal de negociações e a proposta está 100% liberada para emissão e assinatura de contrato.")
                     )
                 }
             },
@@ -108,7 +143,7 @@ def send_consultor_progress_dm(
                 ]
             }
         ])
-        msg_text = f"🎉 Parabéns! Sua solicitação para {escola} foi 100% aprovada!"
+        msg_text = f"🟡 Sua solicitação para {escola} foi concluída com aprovação parcial." if parcial else f"🎉 Parabéns! Sua solicitação para {escola} foi 100% aprovada!"
     else:
         # Notificação de Progresso Incremental
         last_apprv = approvals.get(last_approval_key, {})
@@ -123,7 +158,7 @@ def send_consultor_progress_dm(
         if is_mock:
             blocks.append({
                 "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"🧪 *[MODO DE TESTE]* Simulando feedback para o Consultor: *@{consultor_name}*"}]
+                "elements": [{"type": "mrkdwn", "text": f"🧪 *[MODO DE TESTE]* Simulando feedback para o Consultor: *{_arroba(consultor_name)}*"}]
             })
         blocks.extend([
             {
@@ -131,7 +166,7 @@ def send_consultor_progress_dm(
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        f"Olá @{consultor_name}, uma nova etapa foi aprovada em sua solicitação!\n"
+                        f"Olá {_arroba(consultor_name)}, uma nova etapa foi aprovada em sua solicitação!\n"
                         f"• *Alçada Aprovada:* *{last_label}* por @{actor_name}\n\n"
                         f"*Andamento das Alçadas ({approved_count}/{total_count}):*\n{stepper_text}"
                     )
@@ -147,10 +182,10 @@ def send_consultor_progress_dm(
                 ]
             }
         ])
-        msg_text = f"📋 Progresso da solicitação para {escola}: {last_label} aprovada."
+        msg_text = f"✅ {last_apprv.get('checklist_label') or last_label} aprovou · {escola} ({approved_count} de {total_count})"
 
     try:
-        client.chat_postMessage(
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=target_id,
             text=msg_text,
             blocks=blocks
@@ -181,17 +216,36 @@ def send_consultor_rejection_dm(
     rejected_by_name = rejection_data.get("rejected_by_name", "Aprovador")
     reason_label = rejection_data.get("reason_label", "Solicitação Reprovada")
     details = (rejection_data.get("details") or "").strip() or "Sem justificativa detalhada registrada."
+    parcial = bool(rejection_data.get("parcial"))
+    if ticket.get("status") == "rejected":
+        proximos_passos = (
+            "Todas as alçadas já decidiram. Ajustes pedidos:"
+        )
+    elif ticket.get("status") == "completed":
+        proximos_passos = (
+            "Todas as alçadas já decidiram. Verifique os pareceres na thread."
+        )
+    elif parcial:
+        proximos_passos = (
+            "Essa exceção sai do pedido e as demais alçadas seguem normalmente. "
+            "Se quiser rediscutir a exceção, alinhe os ajustes com o aprovador."
+        )
+    else:
+        proximos_passos = (
+            "As demais alçadas seguem analisando. "
+            "Quando todos decidirem, você recebe o resumo aqui."
+        )
 
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "❌ Solicitação Comercial Reprovada", "emoji": True}
+            "text": {"type": "plain_text", "text": "❌ Solicitação Reprovada (ajustes necessários)" if ticket.get("status") == "rejected" else ("❌ Exceção Reprovada" if parcial else "❌ Alçada Reprovada"), "emoji": True}
         }
     ]
     if is_mock:
         blocks.append({
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"🧪 *[MODO DE TESTE]* Simulando feedback para o Consultor: *@{consultor_name}*"}]
+            "elements": [{"type": "mrkdwn", "text": f"🧪 *[MODO DE TESTE]* Simulando feedback para o Consultor: *{_arroba(consultor_name)}*"}]
         })
 
     blocks.extend([
@@ -216,12 +270,11 @@ def send_consultor_rejection_dm(
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    "💡 *Orientações & Próximos Passos:*\n"
-                    "Revise as condições negociadas e faça os ajustes indicados pelo aprovador. "
-                    "Após alinhar as adequações comerciais, submeta uma nova solicitação no canal de negociações com os dados atualizados."
+                    "💡 *Orientações & Próximos Passos:*\n" + proximos_passos
                 )
             }
         },
+        *([lista_ajustes_rich_text(ticket, com_quem=False)] if ticket.get("status") == "rejected" else []),
         {
             "type": "context",
             "elements": [
@@ -234,9 +287,9 @@ def send_consultor_rejection_dm(
     ])
 
     try:
-        client.chat_postMessage(
+        client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=target_id,
-            text=f"❌ Atenção: Sua solicitação para {escola} foi reprovada por @{rejected_by_name}.",
+            text=f"❌ Atenção: {role_title} reprovada por @{rejected_by_name} ({escola}).",
             blocks=blocks
         )
         logger.info(f"Notificação de reprovação enviada com sucesso para o consultor {target_id} ({escola})")
