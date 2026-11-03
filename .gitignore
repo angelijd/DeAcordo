@@ -13,6 +13,7 @@ google_credentials*.json
 
 # Local runtime state and logs
 tickets_state.json
+painel_state.json
 substitutions_state.json
 *.log
 
