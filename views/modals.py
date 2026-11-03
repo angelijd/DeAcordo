@@ -1005,7 +1005,7 @@ def build_triagem_escolher_ticket_modal(
 
     blocks = [{
         "type": "section",
-        "text": {"type": "mrkdwn", "text": "🔄 *Substituição de Aprovador por Ausência (@triagem)*\nEscolha a solicitação pendente. Em seguida você escolhe a alçada e o substituto."},
+        "text": {"type": "mrkdwn", "text": "🔄 *Trocar Aprovador (@triagem)*\nEscolha a solicitação pendente. Em seguida você escolhe a alçada, o novo aprovador e se a troca é permanente ou provisória."},
     }]
     if options:
         blocks.append({
@@ -1026,7 +1026,7 @@ def build_triagem_escolher_ticket_modal(
     return {
         "type": "modal",
         "callback_id": "modal_triagem_escolher_ticket",
-        "title": {"type": "plain_text", "text": "Substituir Aprovador"},
+        "title": {"type": "plain_text", "text": "Trocar Aprovador"},
         "close": {"type": "plain_text", "text": "Cancelar"},
         "private_metadata": json.dumps({"channel_id": channel_id, "current_user_id": current_user_id}),
         "blocks": blocks,
@@ -1039,7 +1039,7 @@ def build_triagem_substituicao_modal(
     channel_id: str,
 ) -> Dict[str, Any]:
     """
-    Constrói o modal administrativo da @triagem para trocar aprovadores por ausência temporária com período de vigência.
+    Modal da @triagem para trocar o aprovador de uma alçada, de forma permanente ou provisória (com data de corte).
     """
     from datetime import datetime, timedelta
 
@@ -1051,7 +1051,7 @@ def build_triagem_substituicao_modal(
     pending_options = []
     for k, a in approvals.items():
         if a.get("status") == "pending":
-            sub_info = f" [Substituto: @{a['approver_name']}]" if a.get("is_substituted") else ""
+            sub_info = f" [já trocado]" if a.get("is_substituted") else ""
             pending_options.append({
                 "text": {"type": "plain_text", "text": f"{a['short_label']} (@{a['approver_name']}){sub_info}"[:75]},
                 "value": k
@@ -1067,7 +1067,7 @@ def build_triagem_substituicao_modal(
     substitute_element = {
         "type": "users_select",
         "action_id": "novo_aprovador_select",
-        "placeholder": {"type": "plain_text", "text": "Selecione o usuário substituto"},
+        "placeholder": {"type": "plain_text", "text": "Selecione o novo aprovador"},
     }
 
     # Data inicial padrão: hoje + 7 dias
@@ -1086,10 +1086,10 @@ def build_triagem_substituicao_modal(
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"🔄 *Substituição de Aprovador por Ausência (@triagem)*\n"
+                    f"🔄 *Trocar Aprovador (@triagem)*\n"
                     f"• *Escola:* {escola}\n"
                     f"• *Ticket:* `{ticket_key}`\n\n"
-                    f"Selecione a alçada que necessita de cobertura temporária e indique quem assumirá a deliberação até a data limite estipulada."
+                    f"Escolha a alçada, quem passa a aprovar e se a troca é permanente ou provisória."
                 )
             }
         },
@@ -1104,26 +1104,40 @@ def build_triagem_substituicao_modal(
                 "options": pending_options,
                 **({"initial_option": pending_options[0]} if pending_options and pending_options[0]["value"] != "none" else {})
             },
-            "label": {"type": "plain_text", "text": "Qual alçada será substituída?"}
+            "label": {"type": "plain_text", "text": "Qual alçada terá o aprovador trocado?"}
         },
         {
             "type": "input",
             "block_id": "novo_aprovador_block",
             "element": substitute_element,
-            "label": {"type": "plain_text", "text": "Novo Aprovador Substituto:"},
+            "label": {"type": "plain_text", "text": "Novo aprovador:"},
             "hint": {"type": "plain_text", "text": "Esta pessoa receberá o card de aprovação na DM e terá permissão para aprovar o item."}
         },
         {
             "type": "input",
+            "block_id": "tipo_troca_block",
+            "element": {
+                "type": "radio_buttons",
+                "action_id": "tipo_troca_radio",
+                "options": [
+                    {"text": {"type": "plain_text", "text": "Permanente (sem data de corte)"}, "value": "permanente"},
+                    {"text": {"type": "plain_text", "text": "Provisória (com data de corte)"}, "value": "provisoria"},
+                ],
+            },
+            "label": {"type": "plain_text", "text": "A troca é permanente ou provisória?"},
+        },
+        {
+            "type": "input",
             "block_id": "data_limite_block",
+            "optional": True,
             "element": {
                 "type": "datepicker",
                 "action_id": "data_limite_datepicker",
                 "initial_date": default_date,
                 "placeholder": {"type": "plain_text", "text": "Selecione a data"}
             },
-            "label": {"type": "plain_text", "text": "Substituto ativo até o dia (inclusive):"},
-            "hint": {"type": "plain_text", "text": "A partir do dia seguinte a esta data, a alçada volta a ser do titular original."}
+            "label": {"type": "plain_text", "text": "Data de corte (só para provisória):"},
+            "hint": {"type": "plain_text", "text": "Vale até este dia, inclusive. No dia seguinte, a alçada volta para o aprovador anterior."}
         },
         {
             "type": "input",
@@ -1132,17 +1146,17 @@ def build_triagem_substituicao_modal(
             "element": {
                 "type": "plain_text_input",
                 "action_id": "motivo_ausencia_input",
-                "placeholder": {"type": "plain_text", "text": "Ex.: Férias até 25/09, Licença médica, Viagem a trabalho..."}
+                "placeholder": {"type": "plain_text", "text": "Ex.: férias, licença, mudança de responsável..."}
             },
-            "label": {"type": "plain_text", "text": "Motivo da Ausência:"}
+            "label": {"type": "plain_text", "text": "Motivo da troca:"}
         }
     ]
 
     return {
         "type": "modal",
         "callback_id": "modal_triagem_substituicao",
-        "title": {"type": "plain_text", "text": "Substituir Aprovador"},
-        "submit": {"type": "plain_text", "text": "Confirmar Substituição"},
+        "title": {"type": "plain_text", "text": "Trocar Aprovador"},
+        "submit": {"type": "plain_text", "text": "Confirmar troca"},
         "close": {"type": "plain_text", "text": "Cancelar"},
         "private_metadata": json.dumps(metadata),
         "blocks": blocks,

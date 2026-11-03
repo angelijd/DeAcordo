@@ -1,6 +1,6 @@
 """
-Serviço de Gestão de Substituições de Aprovadores por Ausência (@triagem).
-Persiste as trocas em substitutions_state.json e gerencia a vigência temporária.
+Serviço de troca de aprovadores pela @triagem (provisória com data de corte ou permanente).
+Persiste as trocas em substitutions_state.json.
 """
 
 import os
@@ -49,7 +49,7 @@ def registrar_substituicao(
     triagem_user_id: str,
 ) -> Dict[str, Any]:
     """
-    Registra formalmente uma substituição temporária de aprovador.
+    Registra uma troca de aprovador. until_date vazio = troca permanente.
     """
     state = _load_substitutions_state()
     record = {
@@ -62,7 +62,7 @@ def registrar_substituicao(
         "new_approver_id": new_approver_id,
         "new_approver_name": new_approver_name,
         "until_date": until_date,
-        "reason": reason or "Ausência temporária",
+        "reason": reason or "",
         "substituted_by": triagem_user_id,
         "created_at": datetime.now().strftime("%d/%m/%Y às %H:%M"),
     }
@@ -92,8 +92,8 @@ def get_active_substitute(original_approver_name: str, check_date_str: Optional[
     # Percorre as substituições mais recentes primeiro
     for s in reversed(state.get("substitutions", [])):
         if s.get("original_approver_name", "").lower() == original_approver_name.lower():
-            until = s.get("until_date", "")
-            if until and until >= today_str:
+            until = s.get("until_date") or ""
+            if not until or until >= today_str:
                 return s
 
     return None

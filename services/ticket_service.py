@@ -50,6 +50,16 @@ def _compute_sla_due_at(approver_name: str) -> str:
     return due.isoformat()
 
 
+def vigencia_substituicao(until_date: Optional[str]) -> str:
+    """Texto da vigência: troca permanente (sem data) ou provisória até a data."""
+    if not until_date:
+        return "permanente"
+    try:
+        return "até " + datetime.strptime(until_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        return f"até {until_date}"
+
+
 def _is_sla_vencido(approval: Dict[str, Any]) -> bool:
     """Verifica se o prazo de SLA de uma alçada pendente já venceu."""
     due_str = approval.get("sla_due_at")
@@ -155,7 +165,7 @@ def create_ticket(
             eff_id = active_sub["new_approver_id"]
             is_sub = True
             sub_until = active_sub.get("until_date")
-            sub_reason = active_sub.get("reason", "Ausência temporária")
+            sub_reason = active_sub.get("reason", "")
         else:
             eff_name = orig_name
             eff_id = orig_id
@@ -439,7 +449,7 @@ def substitute_approver(
     triagem_user_id: str,
 ) -> Dict[str, Any]:
     """
-    Atualiza o aprovador responsável de uma alçada pendente por motivo de ausência temporária.
+    Troca o aprovador responsável de uma alçada pendente (provisória com data de corte, ou permanente sem data).
     """
     tickets = load_tickets()
     ticket = tickets.get(ticket_key)
@@ -589,7 +599,7 @@ def _linha_alcada(apprv: Dict[str, Any], ticket_reprovado: bool) -> str:
         return f"❌ {rotulo} · {quem}{motivo}"
     sub = ""
     if apprv.get("is_substituted"):
-        sub = f" _(no lugar de {apprv.get('original_approver_name')} até {apprv.get('substitute_until')})_"
+        sub = f" _(no lugar de {apprv.get('original_approver_name')}, {vigencia_substituicao(apprv.get('substitute_until'))})_"
     return f"{'⏹️' if ticket_reprovado else '⏳'} {rotulo} · {_quem_pendente(apprv)}{sub}"
 
 
@@ -959,9 +969,8 @@ def build_approval_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Detalhe de substituição ativa por ausência
         substitute_badge = ""
         if apprv.get("is_substituted"):
-            sub_until = apprv.get("substitute_until", "")
             orig_name = apprv.get("original_approver_name", "")
-            substitute_badge = f"\n_🔄 Substituto temporário até {sub_until} (Titular ausente: @{orig_name})_"
+            substitute_badge = f"\n_🔄 Aprovador trocado, {vigencia_substituicao(apprv.get('substitute_until'))} (anterior: @{orig_name})_"
         substitute_badge += _contexto_excecao(ticket, key, vistos_ctx)
 
         if status == "pending":

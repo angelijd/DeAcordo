@@ -24,6 +24,7 @@ from services.receita_service import consultar_cnpj
 from services.inep_service import buscar_inep
 from services.ticket_service import (
     create_ticket,
+    vigencia_substituicao,
     get_ticket,
     approve_step,
     reject_step,
@@ -261,7 +262,7 @@ def handle_post_button_command(ack, body, client):
                     "type": "button",
                     "text": {
                         "type": "plain_text",
-                        "text": "🔄 Substituir Aprovador (@triagem)",
+                        "text": "🔄 Trocar Aprovador (@triagem)",
                         "emoji": True,
                     },
                     "action_id": "btn_painel_substituicao",
@@ -1304,7 +1305,7 @@ def handle_dm_approval_action(ack, body, client):
         if is_unmapped:
             auth_text = (
                 "⚠️ Esta alçada ainda não possui um aprovador com ID de Slack configurado. "
-                "Peça para a @triagem designar um substituto com `/substituir-aprovador`."
+                "Peça para a @triagem trocar o aprovador com `/substituir-aprovador`."
             )
         else:
             auth_text = "⚠️ Você não tem permissão para decidir sobre esta alçada."
@@ -1951,7 +1952,7 @@ def _abrir_substituicao(client, user_id: str, user_name: str, channel_id: str, t
         client.chat_postEphemeral(
             channel=channel_id,
             user=user_id,
-            text="⛔ *Acesso Restrito ao Perfil @triagem:*\nApenas membros autorizados da Triagem têm permissão para substituir aprovadores por ausência temporária."
+            text="⛔ *Acesso Restrito ao Perfil @triagem:*\nApenas membros autorizados da Triagem têm permissão para trocar aprovadores."
         )
         return
 
@@ -2053,7 +2054,7 @@ def handle_btn_painel_substituicao(ack, body, client):
         client.chat_postEphemeral(
             channel=channel_id,
             user=user_id,
-            text="⛔ *Acesso Restrito ao Perfil @triagem:*\nApenas membros autorizados da Triagem têm permissão para substituir aprovadores por ausência temporária."
+            text="⛔ *Acesso Restrito ao Perfil @triagem:*\nApenas membros autorizados da Triagem têm permissão para trocar aprovadores."
         )
         return
 
@@ -2116,6 +2117,9 @@ def handle_view_triagem_substituicao(ack, body, client, view):
     date_elem = values.get("data_limite_block", {}).get("data_limite_datepicker", {})
     until_date = date_elem.get("selected_date")
 
+    tipo_elem = values.get("tipo_troca_block", {}).get("tipo_troca_radio", {})
+    tipo_troca = (tipo_elem.get("selected_option") or {}).get("value")
+
     # 4. Motivo
     motivo_elem = values.get("motivo_ausencia_block", {}).get("motivo_ausencia_input", {})
     motivo_ausencia = (motivo_elem.get("value") or "").strip()
@@ -2128,15 +2132,19 @@ def handle_view_triagem_substituicao(ack, body, client, view):
         errors["alcada_substituicao_block"] = "Selecione uma alçada pendente para substituição."
 
     if not novo_aprovador_id:
-        errors["novo_aprovador_block"] = "Selecione o aprovador substituto."
+        errors["novo_aprovador_block"] = "Selecione o novo aprovador."
     elif novo_aprovador_id == user_id:
-        errors["novo_aprovador_block"] = "Você não pode se autodesignar como aprovador substituto."
+        errors["novo_aprovador_block"] = "Você não pode se designar como novo aprovador."
     elif consultor_id_check and novo_aprovador_id == consultor_id_check:
-        errors["novo_aprovador_block"] = "O consultor responsável pela solicitação não pode ser o aprovador substituto."
+        errors["novo_aprovador_block"] = "O consultor responsável pela solicitação não pode ser o novo aprovador."
 
     today_str = datetime.now().strftime("%Y-%m-%d")
-    if not until_date:
-        errors["data_limite_block"] = "Informe a data limite para a vigência do substituto."
+    if not tipo_troca:
+        errors["tipo_troca_block"] = "Escolha se a troca é permanente ou provisória."
+    elif tipo_troca == "permanente":
+        until_date = ""
+    elif not until_date:
+        errors["data_limite_block"] = "Para troca provisória, informe a data de corte."
     elif until_date < today_str:
         errors["data_limite_block"] = f"A data limite deve ser hoje ({datetime.now().strftime('%d/%m/%Y')}) ou uma data futura."
 
@@ -2194,12 +2202,8 @@ def handle_view_triagem_substituicao(ack, body, client, view):
         triagem_user_id=user_id,
     )
 
-    # Formatação da data
-    try:
-        dt_obj = datetime.strptime(until_date, "%Y-%m-%d")
-        until_formatted = dt_obj.strftime("%d/%m/%Y")
-    except Exception:
-        until_formatted = until_date
+    vigencia = vigencia_substituicao(until_date)
+    vigencia_txt = "*Permanente* (sem data de corte)" if not until_date else f"Provisória, *{vigencia}* (inclusive)"
 
     # Menção ao substituto
     sub_mention = f"<@{novo_aprovador_id}>" if novo_aprovador_id and novo_aprovador_id.startswith(("U", "W")) else f"@{novo_aprovador_name}"
@@ -2207,13 +2211,12 @@ def handle_view_triagem_substituicao(ack, body, client, view):
 
     # 1. Posta auditoria pública na thread do ticket
     audit_msg = (
-        f"🔄 *SUBSTITUIÇÃO DE APROVADOR POR AUSÊNCIA (@triagem)*\n"
+        f"🔄 *TROCA DE APROVADOR (@triagem)*\n"
         f"• *Alçada:* *{role_title}*\n"
-        f"• *Titular Ausente:* @{orig_name}\n"
-        f"• *Substituto Designado:* {sub_mention} (@{novo_aprovador_name})\n"
-        f"• *Vigência:* Até *{until_formatted}* (inclusive){motivo_txt}\n"
-        f"• *Ação realizada por:* <@{user_id}> (@triagem)\n\n"
-        f"ℹ️ _O aprovador substituto já recebeu o card executivo para deliberação na DM e possui autorização imediata para aprovar ou reprovar esta solicitação._"
+        f"• *Aprovador anterior:* @{orig_name}\n"
+        f"• *Novo aprovador:* {sub_mention} (@{novo_aprovador_name})\n"
+        f"• *Vigência:* {vigencia_txt}{motivo_txt}\n"
+        f"• *Ação realizada por:* <@{user_id}> (@triagem)"
     )
 
     client.chat_postMessage(unfurl_links=False, unfurl_media=False,

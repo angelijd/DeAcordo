@@ -1,7 +1,7 @@
 """
 Configuração e Regras de Acesso para o Perfil de @triagem.
 Permite definir quais usuários do Slack têm autorização para:
-- Substituir aprovadores por ausência
+- Trocar aprovadores (permanente ou provisório)
 - Alterar alçadas em contingência
 """
 

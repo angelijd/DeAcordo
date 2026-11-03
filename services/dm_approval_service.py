@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from config.triagem_config import USE_MOCK_USERS
-from services.ticket_service import confirmar_aprovacao
+from services.ticket_service import confirmar_aprovacao, vigencia_substituicao
 
 logger = logging.getLogger("dm_approval_service")
 
@@ -192,7 +192,7 @@ def send_dm_substitute_card(
     short_label = apprv.get("short_label", "Aprovação")
     orig_name = apprv.get("original_approver_name", "Titular")
     until_date = apprv.get("substitute_until", "")
-    sub_reason = apprv.get("substitution_reason", "Ausência temporária")
+    sub_reason = apprv.get("substitution_reason", "")
     scope_reason = apprv.get("scope_reason") or ""
 
     target_user_id = None
@@ -209,7 +209,7 @@ def send_dm_substitute_card(
         return
 
     try:
-        header_text = f"🔄 Designação de Substituto: {short_label[:90]}"
+        header_text = f"🔄 Troca de Aprovador: {short_label[:90]}"
 
         blocks = [
             {
@@ -233,9 +233,9 @@ def send_dm_substitute_card(
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"🔄 *Você foi designado pela @triagem como Aprovador Substituto*\n"
-                    f"• *Titular Ausente:* @{orig_name}\n"
-                    f"• *Vigência da Substituição:* Válido até *{until_date}*{motivo_txt}"
+                    f"🔄 *Você foi designado pela @triagem como novo aprovador*\n"
+                    f"• *Aprovador anterior:* @{orig_name}\n"
+                    f"• *Vigência:* *{vigencia_substituicao(until_date).capitalize()}*{motivo_txt}"
                 )
             }
         })
@@ -297,7 +297,7 @@ def send_dm_substitute_card(
 
         msg_resp = client.chat_postMessage(unfurl_links=False, unfurl_media=False,
             channel=target_user_id,
-            text=f"Sua aprovação (substituto): {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
+            text=f"Sua aprovação (novo aprovador): {apprv.get('checklist_label') or short_label} · {escola} · {acv}",
             blocks=blocks,
         )
 
