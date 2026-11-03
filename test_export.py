@@ -8,6 +8,7 @@ from services.ticket_service import (
     to_tabular_exception_records,
     export_to_csv,
     TICKET_ROW_FIELDS,
+    RODADA_ROW_FIELDS,
     APPROVAL_ROW_FIELDS,
     EXCEPTION_ROW_FIELDS,
 )
@@ -57,7 +58,7 @@ with tempfile.TemporaryDirectory() as tmp:
     )
 
     row = to_tabular_record(ticket)
-    assert set(row.keys()) == set(TICKET_ROW_FIELDS), "faltou campo no schema de tickets"
+    assert set(row.keys()) == set(TICKET_ROW_FIELDS + RODADA_ROW_FIELDS), "faltou campo no schema de tickets"
     assert row["escola"] == "Escola Teste"
     assert row["frente"] == "(CE) Inbound"
     assert row["thread_permalink"] == "https://arco.slack.com/archives/C123/p111222"

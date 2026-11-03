@@ -9,7 +9,7 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
-from services.ticket_service import TICKET_ROW_FIELDS, to_tabular_record, load_tickets
+from services.ticket_service import TICKET_ROW_FIELDS, RODADA_ROW_FIELDS, to_tabular_record, load_tickets
 
 logger = logging.getLogger("sheets_service")
 
@@ -18,7 +18,7 @@ CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "google_credentials
 
 ABAS_POR_FLUXO = {"crescimento": "Crescimento", "renovacao": "Renovação"}
 EXTRA_FIELDS = ["alcadas", "resultado", "modo_teste"]
-SHEET_FIELDS = TICKET_ROW_FIELDS + EXTRA_FIELDS
+SHEET_FIELDS = TICKET_ROW_FIELDS + EXTRA_FIELDS + RODADA_ROW_FIELDS
 
 _STATUS_PT = {"pending": "Pendente", "completed": "Concluído", "rejected": "Reprovado"}
 _APPROVAL_PT = {"pending": "⏳ pendente", "approved": "✅ aprovado", "rejected": "❌ reprovado"}
