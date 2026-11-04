@@ -1,6 +1,7 @@
 """
 Espelha cada ticket numa planilha do Google Sheets (1 linha por ticket, uma aba por tipo de fluxo).
-Desligado por padrão: só ativa com GOOGLE_SHEET_ID e o arquivo de credenciais da conta de serviço.
+Desligado por padrão: só ativa com GOOGLE_SHEET_ID e a credencial da conta de serviço
+(GOOGLE_CREDENTIALS_JSON com o conteúdo do JSON, ou o arquivo em GOOGLE_CREDENTIALS_FILE).
 Qualquer falha é registrada em log e nunca derruba o fluxo de aprovação.
 """
 
@@ -15,6 +16,7 @@ logger = logging.getLogger("sheets_service")
 
 SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "").strip()
 CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "google_credentials.json").strip()
+CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
 
 ABAS_POR_FLUXO = {"crescimento": "Crescimento", "renovacao": "Renovação"}
 EXTRA_FIELDS = ["alcadas", "resultado", "modo_teste"]
@@ -29,14 +31,19 @@ _spreadsheet = None
 
 
 def is_enabled() -> bool:
-    return bool(SHEET_ID) and os.path.exists(CREDENTIALS_FILE)
+    return bool(SHEET_ID) and (bool(CREDENTIALS_JSON) or os.path.exists(CREDENTIALS_FILE))
 
 
 def _get_spreadsheet():
     global _spreadsheet
     if _spreadsheet is None:
         import gspread  # importado aqui para o bot rodar sem a biblioteca quando a planilha está desligada
-        _spreadsheet = gspread.service_account(filename=CREDENTIALS_FILE).open_by_key(SHEET_ID)
+        if CREDENTIALS_JSON:
+            import json
+            client = gspread.service_account_from_dict(json.loads(CREDENTIALS_JSON))
+        else:
+            client = gspread.service_account(filename=CREDENTIALS_FILE)
+        _spreadsheet = client.open_by_key(SHEET_ID)
     return _spreadsheet
 
 
