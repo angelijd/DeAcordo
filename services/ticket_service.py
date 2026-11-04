@@ -2,6 +2,8 @@ import os
 import re
 import csv
 import json
+import threading
+import functools
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -105,6 +107,18 @@ def _dentro_da_janela_de_cobranca() -> bool:
     hora_atual = datetime.now(BR_TZ).hour
     return 8 <= hora_atual <= 17
 
+# Slack Bolt processa cliques em paralelo: todo ciclo carregar-alterar-salvar passa por este lock
+TICKETS_LOCK = threading.RLock()
+
+
+def _com_lock(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with TICKETS_LOCK:
+            return func(*args, **kwargs)
+    return wrapper
+
+
 def load_tickets() -> Dict[str, Any]:
     """Carrega o arquivo de estado dos tickets"""
     if not os.path.exists(TICKETS_FILE):
@@ -117,16 +131,29 @@ def load_tickets() -> Dict[str, Any]:
         return {}
 
 
+@_com_lock
+def atualizar_campos_alcada(ticket_key: str, approval_key: str, campos: Dict[str, Any]) -> None:
+    tickets = load_tickets()
+    approval = (tickets.get(ticket_key) or {}).get("approvals", {}).get(approval_key)
+    if approval is None:
+        return
+    approval.update(campos)
+    save_tickets(tickets)
+
+
 def save_tickets(tickets: Dict[str, Any]):
     """Salva os tickets de forma persistente"""
     try:
         os.makedirs(os.path.dirname(TICKETS_FILE) or ".", exist_ok=True)
-        with open(TICKETS_FILE, "w", encoding="utf-8") as f:
+        tmp = TICKETS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(tickets, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, TICKETS_FILE)
     except Exception as e:
         logger.error(f"Erro ao salvar tickets_state.json: {e}")
 
 
+@_com_lock
 def create_ticket(
     channel_id: str,
     thread_ts: str,
@@ -263,6 +290,7 @@ def get_ticket(ticket_key: str) -> Optional[Dict[str, Any]]:
     return tickets.get(ticket_key)
 
 
+@_com_lock
 def marcar_sucedida(ticket_key: str, nova_key: str) -> Optional[Dict[str, Any]]:
     """A rodada deixa de ser a atual da escola (os botões de nova rodada saem do card dela)."""
     tickets = load_tickets()
@@ -273,6 +301,7 @@ def marcar_sucedida(ticket_key: str, nova_key: str) -> Optional[Dict[str, Any]]:
     return tickets[ticket_key]
 
 
+@_com_lock
 def update_ticket_card_ts(ticket_key: str, card_msg_ts: str):
     tickets = load_tickets()
     if ticket_key in tickets:
@@ -379,6 +408,7 @@ def mensagem_conclusao(ticket: Dict[str, Any]) -> str:
     )
 
 
+@_com_lock
 def approve_step(
     ticket_key: str,
     approval_key: str,
@@ -423,6 +453,7 @@ def approve_step(
     }
 
 
+@_com_lock
 def reject_step(
     ticket_key: str,
     approval_key: str,
@@ -443,6 +474,9 @@ def reject_step(
     approval = ticket["approvals"].get(approval_key)
     if not approval:
         return {"success": False, "error": "Alçada não encontrada."}
+
+    if approval["status"] in ("approved", "rejected"):
+        return {"success": True, "already_decided": True, "ticket": ticket, "approval": approval}
 
     agora_br = datetime.now(BR_TZ)
     now_str = agora_br.strftime("%d/%m às %Hh%M")
@@ -469,6 +503,7 @@ def reject_step(
     }
 
 
+@_com_lock
 def substitute_approver(
     ticket_key: str,
     approval_key: str,
@@ -1689,6 +1724,7 @@ def compute_productivity_summary(year: int, exclude_test: bool = True) -> Dict[s
     }
 
 
+@_com_lock
 def purge_tickets_keep_summary(year: int, confirm: bool = False) -> Dict[str, Any]:
     """
     Ação DESTRUTIVA e deliberada de fim de ano: calcula o resumo de

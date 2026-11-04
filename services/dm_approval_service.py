@@ -160,10 +160,13 @@ def send_dm_approval_cards(client, ticket: Dict[str, Any], current_user_id: str)
             logger.error(f"Erro ao enviar DM de aprovação para {target_user_id}: {e}")
 
     try:
-        from services.ticket_service import save_tickets, load_tickets
-        all_t = load_tickets()
-        all_t[ticket_key] = ticket
-        save_tickets(all_t)
+        from services.ticket_service import atualizar_campos_alcada
+        for key, apprv in approvals.items():
+            if apprv.get("dm_msg_ts"):
+                atualizar_campos_alcada(ticket_key, key, {
+                    "dm_channel_id": apprv.get("dm_channel_id"),
+                    "dm_msg_ts": apprv.get("dm_msg_ts"),
+                })
     except Exception as e:
         logger.warning(f"Erro ao persistir DM ts no ticket: {e}")
 
@@ -308,10 +311,11 @@ def send_dm_substitute_card(
         logger.info(f"Card de substituição via DM enviado para {target_user_id} ({approval_key}) no canal {dm_channel_id}")
 
         try:
-            from services.ticket_service import save_tickets, load_tickets
-            all_t = load_tickets()
-            all_t[ticket_key] = ticket
-            save_tickets(all_t)
+            from services.ticket_service import atualizar_campos_alcada
+            atualizar_campos_alcada(ticket_key, approval_key, {
+                "dm_channel_id": apprv["dm_channel_id"],
+                "dm_msg_ts": apprv["dm_msg_ts"],
+            })
         except Exception as e:
             logger.warning(f"Erro ao persistir substituição DM ts no ticket: {e}")
 

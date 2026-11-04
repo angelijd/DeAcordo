@@ -79,6 +79,7 @@ from views.modals import (
     MARCAS_PLUS,
 )
 from utils.currency_words import format_real_input, parse_currency_str, valor_para_extenso
+from utils.links import link_do_google_drive
 
 # Configura logs
 logging.basicConfig(level=logging.INFO)
@@ -760,8 +761,8 @@ def handle_submission(ack, body, client):
                 errors[b_id] = f"Informe o percentual de inviabilidade para a marca {m}."
 
     sim_link = data.get("simulador_link") or ""
-    if not sim_link.startswith(("http://", "https://")):
-        errors["simulador_block"] = "Cole o link do Simulador no Google Drive (começando com https://)."
+    if not link_do_google_drive(sim_link):
+        errors["simulador_block"] = "Cole o link do Simulador no Google Drive (https://drive.google.com/... ou https://docs.google.com/...)."
 
     if rodada_meta:
         if not anterior:
@@ -2108,6 +2109,13 @@ def handle_view_reprovar_ticket(ack, body, client, view):
 
     if not res.get("success"):
         logger.error(f"Erro ao rejeitar ticket {ticket_key}: {res.get('error')}")
+        return
+    if res.get("already_decided"):
+        try:
+            client.chat_postEphemeral(channel=channel_id, user=user_id,
+                text="Essa alçada já tinha sido decidida antes do envio da reprovação. Nada foi alterado.")
+        except Exception as e:
+            logger.warning(f"Aviso de alçada já decidida não enviado: {e}")
         return
 
     updated_ticket = res["ticket"]
