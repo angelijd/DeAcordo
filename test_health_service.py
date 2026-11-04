@@ -11,6 +11,9 @@ url = f"http://127.0.0.1:{server.server_address[1]}"
 with urllib.request.urlopen(url + "/health") as r:
     assert r.status == 200 and json.loads(r.read())["status"] == "ok"
 
+with urllib.request.urlopen(url + "/api/v1/health") as r:
+    assert r.status == 200
+
 estado["conectado"] = False
 try:
     urllib.request.urlopen(url + "/health")

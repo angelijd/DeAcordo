@@ -1,5 +1,5 @@
 """
-Rota HTTP /health para a plataforma (Kubernetes) saber se o bot está vivo.
+Rotas HTTP /health e /api/v1/health (padrão da Arco) para a plataforma (Kubernetes) saber se o bot está vivo.
 Só liga quando HEALTH_PORT está definido; local, sem a variável, nada muda.
 Responde 200 enquanto a conexão Socket Mode com o Slack estiver aberta e 503 se cair.
 """
@@ -17,7 +17,7 @@ logger = logging.getLogger("health_service")
 def _make_handler(is_healthy: Callable[[], bool]):
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.rstrip("/") != "/health":
+            if self.path.rstrip("/") not in ("/health", "/api/v1/health"):
                 self.send_response(404)
                 self.end_headers()
                 return
