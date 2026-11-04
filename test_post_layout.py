@@ -76,12 +76,13 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "Comercial (Líder)" in textos(modal["blocks"])
     assert "Kit Professor" not in textos(modal["blocks"])
 
-    # Card na thread: o canal mostra só tipo, escola, CNPJ e status, sem botões
+    # Card na thread: o canal mostra só escola, CNPJ e status (o tipo fica no card de cada rodada), sem botões
     update_ticket_card_ts(t["key"], "1.2")
     t = get_ticket(t["key"])
     t["extra_data"]["post_view"]["cnpj"] = "17407203000108"
     canal = build_main_post_blocks(t)
-    assert textos(canal) == "🔄 *Renovação · SEIS PRE-VESTIBULAR LTDA*\nCNPJ 17.407.203/0001-08  ·  *⏳ Pendente*"
+    assert textos(canal) == "🏫 *SEIS PRE-VESTIBULAR LTDA*\nCNPJ 17.407.203/0001-08  ·  *⏳ Pendente*"
+    assert "🔄 *Renovação*  ·  Rodada 1" in textos(build_thread_blocks(t))
     assert action_ids(canal) == []
     assert build_thread_blocks(t)[0]["type"] != "header"
     assert "btn_decidir_minhas" in action_ids(build_thread_blocks(t))
@@ -92,14 +93,14 @@ with tempfile.TemporaryDirectory() as tmp:
     os.environ.pop("POST_BOTOES")
     assert botoes and all(b["confirm"]["confirm"]["text"] == "Sim, aprovar" for b in botoes)
 
-    # Depois de aprovar e reprovar a exceção: concluída com aprovação parcial, sem botões
+    # Depois de aprovar e reprovar a exceção: concluída com aprovação parcial, só os botões de nova rodada
     approve_step(t["key"], "comercial", "U_LIDER", "lider")
     res = reject_step(t["key"], "excecao_1_ops", "U_BAE", "bae", "outros", "c. Outros", "não")
     blocks = build_thread_blocks(res["ticket"])
-    assert action_ids(blocks) == []
+    assert action_ids(blocks) == ["btn_rodada_nova", "btn_rodada_reenviar"]
     # No canal, 1 ou mais reprovações = Reprovado, mesmo com aprovações
     assert "❌ Reprovado" in textos(build_main_post_blocks(res["ticket"]))
-    assert ts.texto_aviso_canal(res["ticket"]) == "🔄 Renovação · SEIS PRE-VESTIBULAR LTDA · Reprovado"
+    assert ts.texto_aviso_canal(res["ticket"]) == "🏫 SEIS PRE-VESTIBULAR LTDA · Reprovado"
     assert ts.metadata_ticket(res["ticket"])["event_payload"]["ticket_key"] == t["key"]
     # Ajustes pedidos em lista numerada nativa
     rich = [b for b in ts.blocos_conclusao(res["ticket"]) if b["type"] == "rich_text"]

@@ -72,6 +72,7 @@ def build_aprovacoes_modal(
     cnpj_info: Optional[Dict[str, Any]] = None,
     has_file_input: bool = True,
     tipo_fluxo: Optional[str] = None,
+    rodada: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Constrói o dicionário de blocos da janela modal 'Aprovações Arco'
@@ -112,14 +113,46 @@ def build_aprovacoes_modal(
         "has_file_input": True,
         "tipo_fluxo": tipo_fluxo,
     }
+    if rodada:
+        # Nova rodada na thread da escola: {"modo", "parent_key", "cnpj"}. O CNPJ fica travado.
+        metadata["rodada"] = rodada
+        saved_values["cnpj"] = rodada.get("cnpj")
 
     blocks = []
+
+    if rodada:
+        blocks.append({
+            "type": "context",
+            "block_id": "rodada_info_block",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": f"🔁 *{RODADA_MODO_LABEL.get(rodada.get('modo'), 'Nova rodada')}* na thread da escola. Tudo que você mudar aparece na thread.",
+            }],
+        })
 
     # -------------------------------------------------------------
     # 0. Tag do Tipo de Fluxo - sempre visível quando já resolvido,
     #    ou seletor obrigatório quando o canal não pôde ser identificado.
     # -------------------------------------------------------------
-    if tipo_fluxo in TIPO_FLUXO_LABELS:
+    tipo_fluxo_options = [
+        {"text": {"type": "plain_text", "text": label}, "value": key}
+        for key, label in TIPO_FLUXO_LABELS.items()
+    ]
+    if rodada and tipo_fluxo in TIPO_FLUXO_LABELS:
+        # Na thread única a escola pode alternar entre Crescimento e Renovação de uma rodada para outra
+        blocks.append({
+            "type": "input",
+            "block_id": "tipo_fluxo_select_block",
+            "dispatch_action": True,
+            "element": {
+                "type": "static_select",
+                "action_id": "tipo_fluxo_select",
+                "options": tipo_fluxo_options,
+                "initial_option": next(o for o in tipo_fluxo_options if o["value"] == tipo_fluxo),
+            },
+            "label": {"type": "plain_text", "text": "Tipo de Solicitação:"},
+        })
+    elif tipo_fluxo in TIPO_FLUXO_LABELS:
         blocks.append({
             "type": "context",
             "block_id": "tipo_fluxo_tag_block",
@@ -131,10 +164,6 @@ def build_aprovacoes_modal(
             ],
         })
     else:
-        tipo_fluxo_options = [
-            {"text": {"type": "plain_text", "text": label}, "value": key}
-            for key, label in TIPO_FLUXO_LABELS.items()
-        ]
         blocks.append({
             "type": "input",
             "block_id": "tipo_fluxo_select_block",
@@ -291,28 +320,36 @@ def build_aprovacoes_modal(
     digitos_cnpj = re.sub(r"\D", "", str(formatted_cnpj or ""))
     cnpj_key = f"_{abs(hash(formatted_cnpj)) % 100000}" if len(digitos_cnpj) == 14 else ""
     cnpj_block_id = f"cnpj_block{cnpj_key}"
-        
-    blocks.append({
-        "type": "input",
-        "block_id": cnpj_block_id,
-        "dispatch_action": True,
-        "element": cnpj_element,
-        "label": {"type": "plain_text", "text": "CNPJ:"},
-    })
+
+    if rodada:
+        blocks.append({
+            "type": "section",
+            "block_id": "cnpj_travado_block",
+            "text": {"type": "mrkdwn", "text": f"*CNPJ:* {formatted_cnpj}  _(não pode ser alterado nesta thread)_"},
+        })
+    else:
+        blocks.append({
+            "type": "input",
+            "block_id": cnpj_block_id,
+            "dispatch_action": True,
+            "element": cnpj_element,
+            "label": {"type": "plain_text", "text": "CNPJ:"},
+        })
 
     # Botão de Ação: Buscar na Receita Federal
-    blocks.append({
-        "type": "actions",
-        "block_id": "btn_cnpj_action_block",
-        "elements": [
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "🔍 Buscar Dados do CNPJ na Receita"},
-                "action_id": "btn_buscar_cnpj",
-                "style": "primary",
-            }
-        ],
-    })
+    if not rodada:
+        blocks.append({
+            "type": "actions",
+            "block_id": "btn_cnpj_action_block",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🔍 Buscar Dados do CNPJ na Receita"},
+                    "action_id": "btn_buscar_cnpj",
+                    "style": "primary",
+                }
+            ],
+        })
 
     # -------------------------------------------------------------
     # 6. Razão Social da Escola (P6)
@@ -717,7 +754,7 @@ def build_aprovacoes_modal(
         exc_block = {
             "type": "input",
             "block_id": f"excecao_{i}_block",
-            "optional": i > 1,
+            "optional": i > 1 or bool(rodada),
             "element": exc_select_elem,
             "label": {"type": "plain_text", "text": f"Exceção {i}:"},
         }
@@ -758,6 +795,9 @@ def build_aprovacoes_modal(
                 }
             ],
         })
+
+    if rodada:
+        blocks.append(_bloco_observacao_rodada(saved_values.get("observacao_rodada")))
 
     blocks.append({"type": "divider"})
 
@@ -891,8 +931,128 @@ def extract_modal_values(view_state: Dict[str, Any], num_exceptions: int) -> Dic
         res[f"contexto_excecao_{i}"] = get_val(f"contexto_excecao_{i}_block", f"contexto_excecao_{i}_input")
 
     res["simulador_link"] = (get_val("simulador_block", "simulador_link_input") or "").strip()
+    res["observacao_rodada"] = (get_val("observacao_rodada_block", "observacao_rodada_input") or "").strip()
 
     return res
+
+
+RODADA_MODO_LABEL = {
+    "nova": "Incluir nova aprovação",
+    "reenvio": "Reenviar com ajustes",
+}
+
+
+def _bloco_observacao_rodada(valor: Optional[str]) -> Dict[str, Any]:
+    elem = {
+        "type": "plain_text_input",
+        "action_id": "observacao_rodada_input",
+        "multiline": True,
+        "placeholder": {"type": "plain_text", "text": "Ex.: ajustei o desconto conforme pedido pela liderança"},
+    }
+    if valor:
+        elem["initial_value"] = valor
+    return {
+        "type": "input",
+        "block_id": "observacao_rodada_block",
+        "optional": True,
+        "element": elem,
+        "label": {"type": "plain_text", "text": "Observação para os aprovadores:"},
+    }
+
+
+def build_rodada_modal(
+    rodada: Dict[str, Any],
+    escola: str,
+    tipo_fluxo: Optional[str],
+    excecoes: List[Dict[str, str]],
+    num_exceptions: int,
+    ajustes_pedidos: Optional[List[str]] = None,
+    observacao: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Formulário curto da nova rodada: só as exceções (novas ou reenviadas) e uma observação.
+    O resto vem da rodada anterior; "Editar formulário completo" abre tudo, com o CNPJ travado.
+    """
+    num_exceptions = max(1, min(5, num_exceptions))
+    blocks: List[Dict[str, Any]] = [{
+        "type": "section",
+        "block_id": "rodada_cabecalho_block",
+        "text": {
+            "type": "mrkdwn",
+            "text": (
+                f"🏫 *{escola}*\nCNPJ {formatar_cnpj(rodada.get('cnpj'))}  ·  {TIPO_FLUXO_LABELS.get(tipo_fluxo, '')}\n"
+                "Os demais dados seguem iguais aos da rodada anterior."
+            )[:2900],
+        },
+    }]
+    if ajustes_pedidos:
+        blocks.append({
+            "type": "section",
+            "block_id": "rodada_ajustes_block",
+            "text": {"type": "mrkdwn", "text": ("*Ajustes pedidos na rodada anterior:*\n" + "\n".join(ajustes_pedidos))[:2900]},
+        })
+    blocks.append({"type": "divider"})
+
+    exc_options = [{"text": {"type": "plain_text", "text": exc[:75]}, "value": exc} for exc in ALL_EXCEPTIONS_LIST]
+    rotulo = "Exceção reenviada" if rodada.get("modo") == "reenvio" else "Nova exceção"
+    for i in range(1, num_exceptions + 1):
+        exc = excecoes[i - 1] if i - 1 < len(excecoes) else {}
+        exc_elem = {
+            "type": "static_select",
+            "action_id": f"excecao_{i}_select",
+            "placeholder": {"type": "plain_text", "text": "Selecionar uma opção"},
+            "options": exc_options,
+        }
+        if exc.get("nome") in ALL_EXCEPTIONS_LIST:
+            exc_elem["initial_option"] = {"text": {"type": "plain_text", "text": exc["nome"][:75]}, "value": exc["nome"]}
+        blocks.append({
+            "type": "input",
+            "block_id": f"excecao_{i}_block",
+            "optional": True,
+            "element": exc_elem,
+            "label": {"type": "plain_text", "text": f"{rotulo} {i}:"},
+        })
+        ctx_elem = {
+            "type": "plain_text_input",
+            "action_id": f"contexto_excecao_{i}_input",
+            "multiline": True,
+            "placeholder": {"type": "plain_text", "text": "Dê detalhes suficientes para a tomada de decisão"},
+        }
+        if exc.get("contexto"):
+            ctx_elem["initial_value"] = exc["contexto"]
+        blocks.append({
+            "type": "input",
+            "block_id": f"contexto_excecao_{i}_block",
+            "optional": True,
+            "element": ctx_elem,
+            "label": {"type": "plain_text", "text": f"Contexto {i}: (dê detalhes)"},
+        })
+
+    acoes = []
+    if num_exceptions < 5:
+        acoes.append({
+            "type": "button",
+            "action_id": "btn_rodada_add_exception",
+            "text": {"type": "plain_text", "text": f"➕ Adicionar exceção {num_exceptions + 1}"},
+        })
+    acoes.append({
+        "type": "button",
+        "action_id": "btn_rodada_form_completo",
+        "text": {"type": "plain_text", "text": "✏️ Editar formulário completo"},
+    })
+    blocks.append({"type": "actions", "block_id": "rodada_form_actions", "elements": acoes})
+    blocks.append(_bloco_observacao_rodada(observacao))
+
+    metadata = {"rodada": rodada, "num_exceptions": num_exceptions}
+    return {
+        "type": "modal",
+        "callback_id": "modal_rodada",
+        "title": {"type": "plain_text", "text": RODADA_MODO_LABEL.get(rodada.get("modo"), "Nova rodada")[:24]},
+        "submit": {"type": "plain_text", "text": "Enviar"},
+        "close": {"type": "plain_text", "text": "Fechar"},
+        "private_metadata": json.dumps(metadata),
+        "blocks": blocks,
+    }
 
 
 def build_reprovar_modal(
