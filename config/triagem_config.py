@@ -18,13 +18,6 @@ TEST_ALLOW_SELF_APPROVAL = os.environ.get("TEST_ALLOW_SELF_APPROVAL", "false").l
 _raw_triagem_ids = os.environ.get("TRIAGEM_USER_IDS", "")
 TRIAGEM_USER_IDS: List[str] = [uid.strip() for uid in _raw_triagem_ids.split(",") if uid.strip()]
 
-# Nomes de aprovadores que pertencem à triagem na governança Arco
-TRIAGEM_MEMBERS_NAMES = [
-    "Rafael Martinez",
-    "Rafael Bae",
-    "Aline Del Pezzo",
-]
-
 
 def is_user_triagem(user_id: str, user_name: str = "") -> bool:
     """
@@ -39,16 +32,5 @@ def is_user_triagem(user_id: str, user_name: str = "") -> bool:
     if USE_MOCK_USERS or TEST_ALLOW_SELF_APPROVAL:
         return True
 
-    # Verifica se o ID está cadastrado na lista explícita de Triagem
-    if user_id in TRIAGEM_USER_IDS:
-        return True
-
-    # Fallback transitório por nome, enquanto TRIAGEM_USER_IDS não está com os IDs reais
-    # preenchidos. Não checa mais o substring genérico "triagem": qualquer usuário poderia
-    # se autopromover apenas incluindo a palavra no próprio nome/username do Slack.
-    u_lower = (user_name or "").lower()
-    for m in TRIAGEM_MEMBERS_NAMES:
-        if m.lower() in u_lower:
-            return True
-
-    return False
+    # Só o ID do Slack vale: o nome de exibição pode ser trocado por qualquer pessoa.
+    return user_id in TRIAGEM_USER_IDS

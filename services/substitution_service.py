@@ -7,6 +7,9 @@ import os
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+FUSO_BRASILIA = ZoneInfo("America/Sao_Paulo")
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("substitution_service")
@@ -23,17 +26,21 @@ def _load_substitutions_state() -> Dict[str, Any]:
         with open(SUBSTITUTIONS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
+        # Não devolve estado vazio: o próximo salvamento apagaria todas as trocas registradas.
         logger.error(f"Erro ao ler substitutions_state.json: {e}")
-        return {"substitutions": []}
+        raise
 
 
 def _save_substitutions_state(state: Dict[str, Any]):
     try:
         os.makedirs(os.path.dirname(SUBSTITUTIONS_FILE) or ".", exist_ok=True)
-        with open(SUBSTITUTIONS_FILE, "w", encoding="utf-8") as f:
+        tmp = SUBSTITUTIONS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, SUBSTITUTIONS_FILE)
     except Exception as e:
         logger.error(f"Erro ao salvar substitutions_state.json: {e}")
+        raise
 
 
 def registrar_substituicao(
@@ -64,7 +71,7 @@ def registrar_substituicao(
         "until_date": until_date,
         "reason": reason or "",
         "substituted_by": triagem_user_id,
-        "created_at": datetime.now().strftime("%d/%m/%Y às %H:%M"),
+        "created_at": datetime.now(FUSO_BRASILIA).strftime("%d/%m/%Y às %H:%M"),
     }
     state.setdefault("substitutions", []).append(record)
     _save_substitutions_state(state)
@@ -87,7 +94,7 @@ def get_active_substitute(original_approver_name: str, check_date_str: Optional[
         return None
         
     state = _load_substitutions_state()
-    today_str = check_date_str or datetime.now().strftime("%Y-%m-%d")
+    today_str = check_date_str or datetime.now(FUSO_BRASILIA).strftime("%Y-%m-%d")
 
     # Percorre as substituições mais recentes primeiro
     for s in reversed(state.get("substitutions", [])):
