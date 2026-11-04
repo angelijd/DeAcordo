@@ -2616,7 +2616,7 @@ def handle_msg_painel(message, client):
 
 if __name__ == "__main__":
     from services.sheets_service import is_enabled as sheets_enabled
-    logger.info("📊 Planilha do Google: " + ("ATIVA" if sheets_enabled() else "desligada (sem GOOGLE_SHEET_ID ou google_credentials.json)"))
+    logger.info("📊 Planilha do Google: " + ("ATIVA" if sheets_enabled() else "desligada (sem GOOGLE_SHEET_ID ou credencial do Google)"))
     from services.ticket_service import modo_botoes_post
     logger.info(f"🔘 Botões do post: {modo_botoes_post()} (POST_BOTOES no .env: unico = opção A, por_alcada = opção B)")
     try:
