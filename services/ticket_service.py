@@ -1140,6 +1140,8 @@ def build_thread_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     blocks = []
     post_view = (ticket.get("extra_data") or {}).get("post_view")
+    if post_view and post_view.get("fluxo") and ticket.get("sucedida_por") and _card_na_thread(ticket):
+        return build_rodada_resumida_blocks(ticket)
     if post_view and post_view.get("fluxo"):
         return build_post_blocks(ticket)
     if post_view:
@@ -1199,13 +1201,108 @@ def build_thread_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
     return blocks
 
 
+def resumo_rodada(ticket: Dict[str, Any]) -> str:
+    """Uma linha: "✅ Rodada 1 · Crescimento · 03/11 · Aprovado"."""
+    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    data = str(ticket.get("created_at") or "").split(" ")[0][:5]
+    partes = [f"Rodada {int(ticket.get('rodada') or 1)}", pv.get("fluxo") or "Solicitação"]
+    if ticket.get("modo_rodada") == "reenvio":
+        partes.append("reenvio")
+    elif ticket.get("modo_rodada") == "nova":
+        partes.append("nova aprovação")
+    if data:
+        partes.append(data)
+    if ticket.get("status") == "rejected":
+        partes.append("Reprovado")
+    elif ticket.get("status") == "completed":
+        partes.append("Aprovação parcial" if excecoes_reprovadas(ticket) else "Aprovado")
+    else:
+        partes.append("Pendente")
+    return f"{_emoji_status_ticket(ticket)} " + " · ".join(partes)
+
+
+def build_rodada_resumida_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Card de uma rodada que já foi substituída por outra: cabe em uma linha para não poluir a thread."""
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{resumo_rodada(ticket)}*"[:2900]}},
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": "Detalhes desta rodada: botão 📜 Ver histórico no aviso da escola no canal."}]},
+    ]
+
+
+def _botao_historico(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "actions",
+        "block_id": "historico_actions",
+        "elements": [{
+            "type": "button",
+            "action_id": "btn_ver_historico",
+            "value": str((ticket.get("extra_data") or {}).get("cnpj") or ticket.get("cnpj") or ""),
+            "text": {"type": "plain_text", "text": "📜 Ver histórico", "emoji": True},
+        }],
+    }
+
+
+def _linhas_rodada_historico(ticket: Dict[str, Any]) -> List[str]:
+    extra = ticket.get("extra_data") or {}
+    pv = extra.get("post_view") or {}
+    linhas = [f"*{resumo_rodada(ticket)}*"]
+    pedido = f"Pedido por {ticket.get('consultor_name') or 'Consultor'}"
+    if ticket.get("created_at"):
+        pedido += f" em {ticket['created_at']}"
+    if ticket.get("completed_at"):
+        pedido += f" · decidido em {ticket['completed_at']}"
+    linhas.append(pedido)
+    resumo = [x for x in (extra.get("acv"), extra.get("marcas"), extra.get("frente")) if x and x not in ("Não informado", "Não informada")]
+    if resumo:
+        linhas.append(" · ".join(str(x) for x in resumo))
+    reprovado = ticket.get("status") == "rejected"
+    vistos: set = set()
+    for key, apprv in (ticket.get("approvals") or {}).items():
+        linha = _linha_alcada(apprv, reprovado) + _contexto_excecao(ticket, key, vistos)
+        if apprv.get("status") == "rejected" and apprv.get("details"):
+            linha += f"\n> ❌ _{str(apprv['details'])[:500]}_"
+        linhas.append(linha)
+    linhas.extend(pv.get("excecoes_sem_alcada") or [])
+    return linhas
+
+
+def build_historico_modal(rodadas: List[Dict[str, Any]], cnpj: Any) -> Dict[str, Any]:
+    """Janela (só para quem abriu) com todas as rodadas da escola, da mais recente para a mais antiga."""
+    blocks: List[Dict[str, Any]] = []
+    if not rodadas:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"Nenhum pedido encontrado para o CNPJ {_cnpj_formatado(cnpj)}."}})
+    else:
+        escola = rodadas[0].get("escola") or "Escola"
+        cabecalho = f"🏫 *{escola}*\nCNPJ {_cnpj_formatado(cnpj)}  ·  {len(rodadas)} rodada{'s' if len(rodadas) > 1 else ''}"
+        link = rodadas[0].get("thread_permalink")
+        if link:
+            cabecalho += f"  ·  <{link}|Abrir thread>"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": cabecalho[:2900]}})
+        for t in rodadas:
+            if len(blocks) > 90:
+                blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "Rodadas mais antigas não cabem aqui; veja na thread."}]})
+                break
+            blocks.append({"type": "divider"})
+            blocks.extend(_secoes_de_linhas(_linhas_rodada_historico(t)))
+    return {
+        "type": "modal",
+        "callback_id": "modal_historico",
+        "title": {"type": "plain_text", "text": "Histórico da escola"},
+        "close": {"type": "plain_text", "text": "Fechar"},
+        "blocks": blocks[:100],
+    }
+
+
 def build_main_post_blocks(ticket: Dict[str, Any], permalink: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Mensagem principal no canal. Tickets novos (card de aprovação dentro da thread): só a notificação
     com tipo, escola, CNPJ e status. Tickets antigos (card na própria mensagem principal): tudo junto.
     """
     if _card_na_thread(ticket):
-        return build_channel_notice_blocks(ticket)
+        blocks = build_channel_notice_blocks(ticket)
+        if int(ticket.get("rodada") or 1) > 1:
+            blocks.append(_botao_historico(ticket))
+        return blocks
     return build_thread_blocks(ticket)
 
 

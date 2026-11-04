@@ -49,6 +49,7 @@ from services.ticket_service import (
     marcar_sucedida,
     lista_ajustes_rich_text,
     reprovacoes,
+    build_historico_modal,
 )
 from services.rodada_service import (
     MODO_NOVA,
@@ -60,6 +61,7 @@ from services.rodada_service import (
     mensagem_nova_rodada,
     preencher_excecoes,
     rodada_de,
+    rodadas_da_escola,
     tem_obrigatoria_nao_aprovada,
     ultima_rodada_da_escola,
     valores_do_ticket,
@@ -2595,6 +2597,26 @@ def handle_msg_cobranca(message, say, client):
     """Dispara a cobrança de pendências por palavra-chave no canal"""
     total = executar_cobranca_pendencias(client)
     say(f"📢 *Cobrança Inteligente:* {total} lembrete(s) disparado(s) para alçadas pendentes nas threads ativas.")
+
+
+@app.action("btn_ver_historico")
+def handle_btn_ver_historico(ack, body, client):
+    """Histórico da escola numa janela só para quem clicou: nada novo aparece na thread."""
+    ack()
+    cnpj = body["actions"][0].get("value") or ""
+    safe_views_open(client, body["trigger_id"], build_historico_modal(rodadas_da_escola(cnpj), cnpj))
+
+
+@app.command("/historico")
+def handle_cmd_historico(ack, body, client):
+    """/historico 12.345.678/0001-90: abre o histórico da escola de qualquer canal."""
+    ack()
+    cnpj = re.sub(r"\D", "", body.get("text") or "")
+    if len(cnpj) != 14:
+        client.chat_postEphemeral(channel=body["channel_id"], user=body["user_id"],
+                                  text="Use `/historico` seguido do CNPJ da escola, ex.: `/historico 12.345.678/0001-90`.")
+        return
+    safe_views_open(client, body["trigger_id"], build_historico_modal(rodadas_da_escola(cnpj), cnpj))
 
 
 @app.command("/postar-painel")
