@@ -127,8 +127,9 @@ def load_tickets() -> Dict[str, Any]:
         with open(TICKETS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
+        # Não devolve {}: o próximo salvamento sobrescreveria todos os tickets com um estado vazio.
         logger.error(f"Erro ao carregar tickets_state.json: {e}")
-        return {}
+        raise
 
 
 @_com_lock
@@ -151,6 +152,7 @@ def save_tickets(tickets: Dict[str, Any]):
         os.replace(tmp, TICKETS_FILE)
     except Exception as e:
         logger.error(f"Erro ao salvar tickets_state.json: {e}")
+        raise
 
 
 @_com_lock

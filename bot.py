@@ -79,6 +79,7 @@ from views.modals import (
     MARCAS_PLUS,
 )
 from utils.currency_words import format_real_input, parse_currency_str, valor_para_extenso
+from utils.texto import neutralizar_mrkdwn
 from utils.links import link_do_google_drive
 
 # Configura logs
@@ -800,6 +801,7 @@ def _rodada_tem_o_que_aprovar(anterior: dict, data: dict, num_exceptions: int) -
 def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str, channel_id: str,
                        user_id: str, anterior: Optional[dict] = None, modo_rodada: Optional[str] = None):
     """Monta alçadas e posts do pedido. Com `anterior`, o pedido vira nova rodada na thread da escola."""
+    data = neutralizar_mrkdwn(data)
     data["tipo_fluxo"] = tipo_fluxo
     consultor_id = data.get("consultor") or user_id
     lider_id = data.get("lider")
@@ -2067,7 +2069,7 @@ def handle_view_reprovar_ticket(ack, body, client, view):
 
     # Obtém justificativa / detalhes
     detalhes_elem = values.get("detalhes_reprovacao_block", {}).get("detalhes_reprovacao_input", {})
-    detalhes = detalhes_elem.get("value") or ""
+    detalhes = neutralizar_mrkdwn(detalhes_elem.get("value") or "")
 
     errors = {}
     if not reason_key:
@@ -2445,7 +2447,7 @@ def handle_view_triagem_substituicao(ack, body, client, view):
 
     # 4. Motivo
     motivo_elem = values.get("motivo_ausencia_block", {}).get("motivo_ausencia_input", {})
-    motivo_ausencia = (motivo_elem.get("value") or "").strip()
+    motivo_ausencia = neutralizar_mrkdwn((motivo_elem.get("value") or "").strip())
 
     ticket_for_validation = get_ticket(ticket_key)
     consultor_id_check = ticket_for_validation.get("consultor_id") if ticket_for_validation else None
