@@ -2634,4 +2634,6 @@ if __name__ == "__main__":
 
     logger.info("⚡ Iniciando o Slack Bot em Socket Mode...")
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+    from services.health_service import start_health_server
+    start_health_server(lambda: handler.client.is_connected())
     handler.start()
