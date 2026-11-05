@@ -90,3 +90,35 @@ assert "cnpj_travado_block" in ids and not any(i.startswith("cnpj_block") for i 
 assert "btn_buscar_cnpj" not in action_ids(completo["blocks"])
 
 print("test_rodadas OK")
+
+# Histórico: rodada substituída vira uma linha; aviso do canal ganha "Ver histórico"; janela lista as rodadas
+from services.ticket_service import build_main_post_blocks, build_historico_modal, resumo_rodada
+from services.rodada_service import rodadas_da_escola
+
+with tempfile.TemporaryDirectory() as tmp:
+    ts.TICKETS_FILE = os.path.join(tmp, "tickets_state.json")
+    extra = {"cnpj": FORM["cnpj"], "form_values": FORM, "post_view": {"fluxo": "Crescimento", "escola": "ESCOLA"},
+             "excecoes": [{"numero": 1, "nome": "Desconto", "contexto": "10%"}]}
+    r1 = create_ticket("C1", "1.1", "ESCOLA", "UCONS", "Consultor", "t", APROVACOES, extra_data=extra)
+    ts.update_ticket_card_ts(r1["key"], "1.2")
+    approve_step(r1["key"], "comercial", "ULIDER", "lider")
+    reject_step(r1["key"], "excecao_1_com", "ULIDER", "lider", "outros", "c. Outros", "menos")
+    r2 = create_ticket("C1", "1.1", "ESCOLA", "UCONS", "Consultor", "t", APROVACOES, extra_data=extra,
+                       rodada=2, rodada_anterior=r1["key"], modo_rodada=MODO_REENVIO)
+    ts.update_ticket_card_ts(r2["key"], "1.3")
+    r1 = marcar_sucedida(r1["key"], r2["key"])
+
+    resumido = build_thread_blocks(r1)
+    assert len(resumido) == 2 and "Rodada 1 · Crescimento" in resumido[0]["text"]["text"]
+    assert "Aprovação parcial" in resumo_rodada(r1)
+    aviso = build_main_post_blocks(get_ticket(r2["key"]))
+    assert action_ids(aviso) == ["btn_ver_historico"]
+
+    rodadas = rodadas_da_escola("17407203000108")
+    assert [t["key"] for t in rodadas] == [r2["key"], r1["key"]]
+    hist = build_historico_modal(rodadas, "17407203000108")
+    texto = "\n".join(b["text"]["text"] for b in hist["blocks"] if b["type"] == "section")
+    assert texto.index("Rodada 2") < texto.index("Rodada 1") and "menos" in texto
+    assert "Nenhum pedido" in build_historico_modal([], "1")["blocks"][0]["text"]["text"]
+
+print("test_rodadas historico OK")

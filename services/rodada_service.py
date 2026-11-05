@@ -270,3 +270,16 @@ def mensagem_nova_rodada(
                 linha += f"\n> {exc['contexto'][:400]}"
             linhas.append(linha)
     return "\n".join(linhas)[:2900]
+
+
+def rodadas_da_escola(cnpj: Any, tickets: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Todas as rodadas da escola (pelo CNPJ), em qualquer canal, da mais recente para a mais antiga."""
+    digitos = cnpj_digitos(cnpj)
+    if len(digitos) != 14:
+        return []
+    tickets = tickets if tickets is not None else load_tickets()
+    rodadas = [
+        t for t in tickets.values()
+        if cnpj_digitos((t.get("extra_data") or {}).get("cnpj") or t.get("cnpj")) == digitos
+    ]
+    return sorted(rodadas, key=lambda t: (float(t.get("thread_ts") or 0), rodada_de(t)), reverse=True)
