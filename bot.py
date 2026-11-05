@@ -16,7 +16,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from config.approvers_map import APPROVERS_CONFIG, format_user_mention
-from config.exceptions_rules import EXCEPTIONS_RULES
+from config.exceptions_rules import EXCEPTIONS_RULES, aplicar_dispensa_por_divida
 from config.triagem_config import is_user_triagem
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
 from config.n3_config import DIRETORES_N3, MODO_ALTA_DEMANDA, N3_GENERICO, N3_MARCAR_APROVADORES, resolver_aprovadores_n3
@@ -806,6 +806,11 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
     consultor_id = data.get("consultor") or user_id
     lider_id = data.get("lider")
 
+    # Dívida informada, usada também pelas exceções com aprovação automática até R$ 50k
+    valor_divida_num = 0.0
+    if data.get("tem_divida") == "sim" and data.get("valor_divida"):
+        valor_divida_num = parse_currency_str(data.get("valor_divida")) or 0.0
+
     # Mapeamento dos Aprovadores das Exceções selecionadas
     excecoes_detalhes = []
     aprovadores_para_marcar = set()
@@ -823,6 +828,8 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
             "ops": "-",
             "ops_approver": None,
         })
+
+        rule, dispensa = aplicar_dispensa_por_divida(rule, valor_divida_num)
 
         # Resolve Aprovador Comercial
         aprov_com = rule.get("comercial_approver")
@@ -857,6 +864,7 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
             "aprov_ops_tag": ops_tag,
             "aprov_com_nome": aprov_com,
             "aprov_ops_nome": aprov_ops,
+            "dispensa": dispensa,
         })
 
     # Versão estruturada das exceções, para salvar no ticket (fora do texto livre)
@@ -1086,7 +1094,9 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
     for item in excecoes_detalhes:
         if item.get("aprov_com_nome") or item.get("aprov_ops_nome"):
             continue
-        if "não precisa" in str(item.get("regra_comercial", "")).lower():
+        if item.get("dispensa"):
+            linha = f"➖ Exceção {item['numero']} · {item['nome'][:70]} · {item['dispensa']}"
+        elif "não precisa" in str(item.get("regra_comercial", "")).lower():
             linha = f"➖ Exceção {item['numero']} · {item['nome'][:70]} · não precisa de aprovação"
         else:
             linha = f"⚠️ Exceção {item['numero']} · {item['nome'][:70]} · sem aprovador definido na regra"
