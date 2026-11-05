@@ -24,9 +24,10 @@ EXCEPTIONS_RULES = {
     "Modalidade de venda - alteração (B2C x B2B x B2B2B)": {
         "comercial": "-",
         "comercial_approver": None,
-        "ops": "Verificar dívida interna: até R$ 50k aprovação automática; acima disso marcar Rafael Bae (SLA 2 dias úteis) @triagem--contratos psc",
-        "ops_approver": "Rafael Bae",
+        "ops": "Dívida acima de R$ 50k: validação do Matheus Alves Rocha. Até R$ 50k: aprovação automática",
+        "ops_approver": "Matheus Alves Rocha",
         "check_debt": True,
+        "automatica_ate_50k": True,
     },
     "Pagamento de multa do concorrente": {
         "comercial": "Líder direto do consultor",
@@ -388,3 +389,14 @@ EXCEPTIONS_RULES = {
 }
 
 ALL_EXCEPTIONS_LIST = list(EXCEPTIONS_RULES.keys())
+
+
+LIMITE_DIVIDA_AUTOMATICA = 50000.0
+
+
+def aplicar_dispensa_por_divida(rule: dict, valor_divida: float):
+    """Exceções com "automatica_ate_50k": sem aprovador quando a dívida é até R$ 50k (ou não há dívida).
+    Devolve (regra efetiva, texto da dispensa ou "")."""
+    if rule.get("automatica_ate_50k") and (valor_divida or 0.0) <= LIMITE_DIVIDA_AUTOMATICA:
+        return {**rule, "comercial_approver": None, "ops_approver": None}, "aprovação automática (dívida até R$ 50k)"
+    return rule, ""

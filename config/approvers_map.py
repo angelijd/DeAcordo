@@ -97,6 +97,10 @@ APPROVERS_CONFIG = {
         "slack_id": "",
         "tag_role": "Liderança Comercial",
     },
+    "Matheus Alves Rocha": {
+        "slack_id": "U09R71Q9UHM",
+        "tag_role": "Validação Modalidade de Venda (dívida > R$ 50k)",
+    },
     "Fernando Rodrigues Santos": {
         "slack_id": "",
         "tag_role": "Consultor Comercial",
