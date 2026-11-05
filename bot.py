@@ -811,6 +811,10 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
     if data.get("tem_divida") == "sim" and data.get("valor_divida"):
         valor_divida_num = parse_currency_str(data.get("valor_divida")) or 0.0
 
+    # Exceção que já leva a dívida alta a um validador próprio (ex.: Modalidade de venda -> Matheus).
+    # Nesse caso a alçada geral de dívida (Rafael Bae) não é criada.
+    divida_validada_por_excecao = False
+
     # Mapeamento dos Aprovadores das Exceções selecionadas
     excecoes_detalhes = []
     aprovadores_para_marcar = set()
@@ -830,6 +834,8 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
         })
 
         rule, dispensa = aplicar_dispensa_por_divida(rule, valor_divida_num)
+        if rule.get("automatica_ate_50k") and not dispensa:
+            divida_validada_por_excecao = True
 
         # Resolve Aprovador Comercial
         aprov_com = rule.get("comercial_approver")
@@ -926,7 +932,8 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
         val_div_num = parse_currency_str(data.get("valor_divida")) or 0.0
         if val_div_num > 50000.0:
             tem_divida_alta = True
-            aprovadores_para_marcar.add(aprovador_bae)
+            if not divida_validada_por_excecao:
+                aprovadores_para_marcar.add(aprovador_bae)
 
     # Dados cadastrais e complementares
     cnpj_formatado = data.get('cnpj') or 'Não informado'
@@ -1226,7 +1233,7 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
             })
 
     # Alçada Especial Dívida (> R$ 50k)
-    if tem_divida_alta:
+    if tem_divida_alta and not divida_validada_por_excecao:
         divida_val_display = divida_fmt if (data.get("tem_divida") == "sim" and data.get("valor_divida")) else "Acima de R$ 50k"
         approvals_list.append({
             "key": "divida_bae",
