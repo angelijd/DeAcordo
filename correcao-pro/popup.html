@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>Correção Pro</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header>
+    <h1>Correção Pro</h1>
+    <label class="toggle"><input type="checkbox" id="enabled"> Ativo</label>
+  </header>
+  <nav>
+    <button data-tab="history" class="active">Cópias</button>
+    <button data-tab="shortcuts">Atalhos</button>
+    <button data-tab="settings">Config</button>
+  </nav>
+
+  <section id="history" class="tab active">
+    <input id="search" placeholder="Buscar nas cópias...">
+    <ul id="historyList"></ul>
+    <button id="clearHistory" class="danger small">Limpar histórico</button>
+  </section>
+
+  <section id="shortcuts" class="tab">
+    <form id="shortcutForm">
+      <input id="key" placeholder="Atalho (ex.: ponto)" required pattern="\S+" title="Sem espaços">
+      <textarea id="value" placeholder="Texto que vai substituir o atalho" rows="3" required></textarea>
+      <button type="submit">Salvar atalho</button>
+    </form>
+    <ul id="shortcutList"></ul>
+  </section>
+
+  <section id="settings" class="tab">
+    <p><b>Quando expandir o atalho?</b></p>
+    <label><input type="radio" name="trigger" value="space"> Depois de digitar espaço (recomendado)</label>
+    <label><input type="radio" name="trigger" value="immediate"> Imediatamente ao digitar</label>
+    <hr>
+    <button id="export">Exportar backup</button>
+    <label class="btn">Importar backup <input type="file" id="import" accept=".json" hidden></label>
+  </section>
+  <script src="popup.js"></script>
+</body>
+</html>
