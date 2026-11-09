@@ -892,15 +892,15 @@ def confirmar_aprovacao(rotulo: str, escola: str) -> Dict[str, Any]:
 
 def build_decidir_modal(ticket: Dict[str, Any], user_id: str, autorizado) -> Dict[str, Any]:
     """Janela com as alçadas pendentes de quem clicou em "Decidir minhas aprovações"."""
-    pv = (ticket.get("extra_data") or {}).get("post_view") or {}
     minhas = alcadas_do_usuario(ticket, user_id, autorizado)
     decididas_agora = [
         a for a in ticket.get("approvals", {}).values()
         if a.get("status") in ("approved", "rejected") and user_id in (a.get("approved_by_id"), a.get("rejected_by_id"))
     ]
 
+    resumo_txt = f"💵 ACV: {ticket.get('acv') or '-'}  ·  👤 Consultor: {ticket.get('consultor_name') or '-'}"
     blocks: List[Dict[str, Any]] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{ticket.get('escola', 'Escola')}*\n{pv.get('resumo', '')}"[:2900]}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{ticket.get('escola', 'Escola')}*\n{resumo_txt}"[:2900]}},
     ]
     if ticket.get("thread_permalink"):
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔗 <{ticket['thread_permalink']}|Abrir a thread com o contexto>"}]})
@@ -909,7 +909,7 @@ def build_decidir_modal(ticket: Dict[str, Any], user_id: str, autorizado) -> Dic
     for apprv in minhas:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": (f"*{apprv.get('checklist_label') or apprv.get('short_label')}*" + (f"\n{apprv['scope_reason']}" if apprv.get("scope_reason") else ""))[:2900]},
+            "text": {"type": "mrkdwn", "text": f"*{apprv.get('checklist_label') or apprv.get('short_label')}*"[:2900]},
         })
         blocks.append({
             "type": "actions",
