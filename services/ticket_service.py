@@ -167,18 +167,13 @@ def create_ticket(
     main_text_base: str = "",
     thread_permalink: Optional[str] = None,
     extra_data: Optional[Dict[str, Any]] = None,
-    rodada: int = 1,
-    rodada_anterior: Optional[str] = None,
-    modo_rodada: Optional[str] = None,
-    criado_por_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Registra um novo ticket com a lista de aprovadores individuais.
     Cada aprovador possui uma alçada, id do usuário esperado e status.
-    Rodadas seguintes da mesma escola ficam na mesma thread, com chave própria.
     """
     tickets = load_tickets()
-    ticket_key = f"{channel_id}_{thread_ts}" if rodada <= 1 else f"{channel_id}_{thread_ts}_r{rodada}"
+    ticket_key = f"{channel_id}_{thread_ts}"
 
     approvals = {}
     for apprv in approvals_list:
@@ -229,16 +224,6 @@ def create_ticket(
             "substitute_until": sub_until,
             "substitution_reason": sub_reason,
         }
-        herdada = apprv.get("herdada")
-        if herdada:
-            approvals[key].update({
-                "status": "approved",
-                "herdada": herdada,
-                "approved_by_id": herdada.get("approved_by_id"),
-                "approved_by_name": herdada.get("approved_by_name"),
-                "approved_at": herdada.get("approved_at"),
-                "sla_due_at": None,
-            })
 
     ticket = {
         "key": ticket_key,
@@ -264,12 +249,7 @@ def create_ticket(
         "valor_divida": (extra_data or {}).get("valor_divida"),
         "tem_divida_alta": (extra_data or {}).get("tem_divida_alta", False),
         "marcas_com_inviab": bool((extra_data or {}).get("marcas_com_inviab")),
-        "rodada": rodada,
-        "rodada_anterior": rodada_anterior,
-        "modo_rodada": modo_rodada,
-        "criado_por_id": criado_por_id,
     }
-    _concluir_se_todas_decididas(ticket, ticket["created_at"])
 
     tickets[ticket_key] = ticket
     save_tickets(tickets)
@@ -290,17 +270,6 @@ def _sync_sheet(ticket_key: str) -> None:
 def get_ticket(ticket_key: str) -> Optional[Dict[str, Any]]:
     tickets = load_tickets()
     return tickets.get(ticket_key)
-
-
-@_com_lock
-def marcar_sucedida(ticket_key: str, nova_key: str) -> Optional[Dict[str, Any]]:
-    """A rodada deixa de ser a atual da escola (os botões de nova rodada saem do card dela)."""
-    tickets = load_tickets()
-    if ticket_key not in tickets:
-        return None
-    tickets[ticket_key]["sucedida_por"] = nova_key
-    save_tickets(tickets)
-    return tickets[ticket_key]
 
 
 @_com_lock
@@ -659,8 +628,6 @@ def _linha_alcada(apprv: Dict[str, Any], ticket_reprovado: bool) -> str:
     if status == "approved":
         quem = _mencao_id(apprv.get("approved_by_id")) or f"@{apprv.get('approved_by_name') or apprv.get('approver_name')}"
         quando = f" · _{apprv['approved_at']}_" if apprv.get("approved_at") else ""
-        if apprv.get("herdada"):
-            quando += f" · _aprovada na rodada {apprv['herdada'].get('rodada')}_"
         return f"✅ {rotulo} · {quem}{quando}"
     if status == "rejected":
         quem = _mencao_id(apprv.get("rejected_by_id")) or f"@{apprv.get('rejected_by_name') or apprv.get('approver_name')}"
@@ -721,29 +688,28 @@ def status_canal(ticket: Dict[str, Any]) -> str:
 
 
 def build_channel_notice_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Aviso da escola no canal: escola, CNPJ e status da rodada atual. Sem o tipo (Crescimento/Renovação),
-    porque a thread da escola é única e o tipo pode mudar de uma rodada para outra; ele aparece em cada card.
-    """
+    """Notificação de nova negociação no canal: tipo, escola, CNPJ e status. Nada de botões."""
     pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    fluxo = pv.get("fluxo") or "Solicitação"
+    emoji_fluxo = "🔄" if fluxo == "Renovação" else "🌱"
     escola = pv.get("escola") or ticket.get("escola") or "Escola"
     cnpj = _cnpj_formatado(pv.get("cnpj") or ticket.get("cnpj") or (ticket.get("extra_data") or {}).get("cnpj"))
-    rodada = int(ticket.get("rodada") or 1)
-    sufixo = f"  ·  {rodada} rodadas" if rodada > 1 else ""
     return [{
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": f"🏫 *{escola}*\nCNPJ {cnpj}  ·  *{status_canal(ticket)}*{sufixo}"[:2900],
+            "text": f"{emoji_fluxo} *{fluxo} · {escola}*\nCNPJ {cnpj}  ·  *{status_canal(ticket)}*"[:2900],
         },
     }]
 
 
 def texto_aviso_canal(ticket: Dict[str, Any]) -> str:
-    """Texto da notificação (push/prévia) do aviso no canal: "ESCOLA · Pendente"."""
+    """Texto da notificação (push/prévia) do aviso no canal: "🔄 Renovação · ESCOLA · Pendente"."""
     pv = (ticket.get("extra_data") or {}).get("post_view") or {}
+    fluxo = pv.get("fluxo") or "Solicitação"
+    emoji_fluxo = "🔄" if fluxo == "Renovação" else "🌱"
     escola = pv.get("escola") or ticket.get("escola") or "Escola"
-    return f"🏫 {escola} · {status_canal(ticket).split(' ', 1)[-1]}"
+    return f"{emoji_fluxo} {fluxo} · {escola} · {status_canal(ticket).split(' ', 1)[-1]}"
 
 
 def texto_card_thread(ticket: Dict[str, Any]) -> str:
@@ -814,14 +780,6 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": "header",
             "text": {"type": "plain_text", "text": f"{_emoji_status_ticket(ticket)} {pv['fluxo']} · {pv['escola']}"[:150], "emoji": True},
         })
-    else:
-        emoji_fluxo = "🔄" if pv.get("fluxo") == "Renovação" else "🌱"
-        cabecalho = f"{emoji_fluxo} *{pv.get('fluxo')}*  ·  Rodada {int(ticket.get('rodada') or 1)}"
-        if ticket.get("modo_rodada") == "reenvio":
-            cabecalho += " · reenvio com ajustes"
-        elif ticket.get("modo_rodada") == "nova":
-            cabecalho += " · nova aprovação"
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": cabecalho}]})
     if pv.get("itens"):
         # Um item por linha (valor, reajuste, marca, alunado, consultor e líder, SalesForce) + botão do Simulador
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(pv["itens"])[:2900]}})
@@ -860,8 +818,6 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Opção B: bloco de aprovações no formato anterior (seção + botões por alçada, botões da triagem)
         blocks.extend(build_approval_blocks(ticket))
         blocks.extend(_secoes_de_linhas(list(pv.get("excecoes_sem_alcada") or [])))
-        if not pendente and na_thread and not ticket.get("sucedida_por"):
-            blocks.extend(_botoes_nova_rodada(ticket))
         blocks.extend(_rodape_blocos(na_thread))
         return blocks
 
@@ -905,34 +861,9 @@ def build_post_blocks(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
             })
         elementos.append(_menu_triagem(ticket["key"]))
         blocks.append({"type": "actions", "block_id": "post_actions", "elements": elementos})
-    elif na_thread and not ticket.get("sucedida_por"):
-        blocks.extend(_botoes_nova_rodada(ticket))
 
     blocks.extend(_rodape_blocos(na_thread))
     return blocks
-
-
-def _botoes_nova_rodada(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Botões do consultor no card finalizado: incluir nova aprovação e/ou reenviar o que foi reprovado."""
-    elementos: List[Dict[str, Any]] = []
-    if ticket.get("status") == "completed":
-        elementos.append({
-            "type": "button",
-            "action_id": "btn_rodada_nova",
-            "value": ticket["key"],
-            "text": {"type": "plain_text", "text": "➕ Incluir nova aprovação", "emoji": True},
-            "style": "primary",
-        })
-    if reprovacoes(ticket):
-        elementos.append({
-            "type": "button",
-            "action_id": "btn_rodada_reenviar",
-            "value": ticket["key"],
-            "text": {"type": "plain_text", "text": "🔁 Reenviar com ajustes", "emoji": True},
-        })
-    if not elementos:
-        return []
-    return [{"type": "actions", "block_id": "rodada_actions", "elements": elementos}]
 
 
 def alcadas_do_usuario(ticket: Dict[str, Any], user_id: str, autorizado) -> List[Dict[str, Any]]:
@@ -1400,17 +1331,13 @@ TICKET_ROW_FIELDS = [
     "rejected_by_id", "rejected_by_name", "rejection_reason_label", "rejection_details",
 ]
 
-# Rodada do pedido na thread única da escola. Fica fora de TICKET_ROW_FIELDS para não
-# deslocar as colunas que a planilha do Google já tem; entra sempre no fim.
-RODADA_ROW_FIELDS = ["rodada", "modo_rodada"]
-
 APPROVAL_ROW_FIELDS = [
     "ticket_key", "approval_key", "role_title", "short_label", "approver_id",
     "approver_name", "status", "sla_due_at",
     "approved_by_id", "approved_by_name", "approved_at",
     "rejected_by_id", "rejected_by_name", "rejected_at", "reason_key", "reason_label", "details",
     "is_substituted", "original_approver_id", "original_approver_name",
-    "substitute_until", "substitution_reason", "substituted_by", "substituted_at", "herdada_da_rodada",
+    "substitute_until", "substitution_reason", "substituted_by", "substituted_at",
 ]
 
 # 1 linha por exceção selecionada no formulário (até 5 por ticket). O status é
@@ -1437,8 +1364,6 @@ def to_tabular_record(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "tipo_fluxo": extra.get("tipo_fluxo") or "crescimento",
         "channel_id": ticket.get("channel_id"),
         "thread_ts": ticket.get("thread_ts"),
-        "rodada": ticket.get("rodada") or 1,
-        "modo_rodada": ticket.get("modo_rodada") or "",
         "thread_permalink": ticket.get("thread_permalink"),
         "escola": ticket.get("escola"),
         "cnpj": extra.get("cnpj") or ticket.get("cnpj"),
@@ -1579,7 +1504,6 @@ def to_tabular_approval_records(ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
             "substitution_reason": a.get("substitution_reason"),
             "substituted_by": a.get("substituted_by"),
             "substituted_at": a.get("substituted_at"),
-            "herdada_da_rodada": (a.get("herdada") or {}).get("rodada"),
         })
     return rows
 
@@ -1608,7 +1532,7 @@ def export_to_csv(out_dir: str) -> Dict[str, str]:
         exceptions_path = os.path.join(out_dir, f"exceptions_{tipo}.csv")
 
         with open(tickets_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=TICKET_ROW_FIELDS + RODADA_ROW_FIELDS)
+            writer = csv.DictWriter(f, fieldnames=TICKET_ROW_FIELDS)
             writer.writeheader()
             for ticket in tickets_do_tipo:
                 writer.writerow(to_tabular_record(ticket))
@@ -1702,7 +1626,7 @@ def compute_productivity_summary(year: int, exclude_test: bool = True) -> Dict[s
 
         for alcada in PRODUCTIVITY_ALCADAS:
             approval = ticket.get("approvals", {}).get(alcada)
-            if not approval or approval.get("status") not in ("approved", "rejected") or approval.get("herdada"):
+            if not approval or approval.get("status") not in ("approved", "rejected"):
                 continue
 
             cumprido = approval.get("sla_cumprido")

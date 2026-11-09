@@ -46,23 +46,6 @@ from services.ticket_service import (
     texto_post_principal,
     metadata_ticket,
     blocos_conclusao,
-    marcar_sucedida,
-    lista_ajustes_rich_text,
-    reprovacoes,
-)
-from services.rodada_service import (
-    MODO_NOVA,
-    MODO_REENVIO,
-    campos_alterados,
-    excecoes_do_formulario,
-    excecoes_reprovadas_da_rodada,
-    herdar_aprovacoes,
-    mensagem_nova_rodada,
-    preencher_excecoes,
-    rodada_de,
-    tem_obrigatoria_nao_aprovada,
-    ultima_rodada_da_escola,
-    valores_do_ticket,
 )
 from services.dm_approval_service import send_dm_approval_cards, send_dm_substitute_card
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
@@ -74,7 +57,6 @@ from views.modals import (
     build_reprovar_modal,
     build_triagem_substituicao_modal,
     build_triagem_escolher_ticket_modal,
-    build_rodada_modal,
     MARCAS_CORE,
     MARCAS_PLUS,
 )
@@ -343,7 +325,6 @@ def handle_tem_divida_select(ack, body, client):
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
         tipo_fluxo=metadata.get("tipo_fluxo"),
-        rodada=metadata.get("rodada"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -380,7 +361,6 @@ def handle_rede_select(ack, body, client):
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
         tipo_fluxo=metadata.get("tipo_fluxo"),
-        rodada=metadata.get("rodada"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -434,7 +414,6 @@ def handle_cnpj_input(ack, body, client):
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
         tipo_fluxo=metadata.get("tipo_fluxo"),
-        rodada=metadata.get("rodada"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -479,7 +458,6 @@ def handle_buscar_cnpj_button(ack, body, client):
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
         tipo_fluxo=metadata.get("tipo_fluxo"),
-        rodada=metadata.get("rodada"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -522,7 +500,6 @@ def handle_currency_realtime_hint(ack, body, client):
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
         tipo_fluxo=metadata.get("tipo_fluxo"),
-        rodada=metadata.get("rodada"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -555,7 +532,6 @@ def handle_add_exception(ack, body, client):
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
         tipo_fluxo=metadata.get("tipo_fluxo"),
-        rodada=metadata.get("rodada"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -575,24 +551,6 @@ def handle_tipo_fluxo_select(ack, body, client):
     selected_opt = body.get("actions", [{}])[0].get("selected_option")
     tipo_escolhido = selected_opt.get("value") if selected_opt else None
     logger.info(f"🔔 [ACTION: tipo_fluxo_select] Canal não mapeado - tipo escolhido manualmente: {tipo_escolhido}")
-
-    if metadata.get("rodada"):
-        # Nova rodada: troca o tipo mantendo o que já foi preenchido
-        num_exceptions = metadata.get("num_exceptions", 1)
-        saved_values = extract_modal_values(view["state"], num_exceptions)
-        saved_values["tipo_fluxo"] = tipo_escolhido
-        updated_modal = build_aprovacoes_modal(
-            current_user_id=current_user_id,
-            channel_id=channel_id,
-            num_exceptions=num_exceptions,
-            saved_values=saved_values,
-            cnpj_info=metadata.get("cnpj_info", {}),
-            has_file_input=has_file_input,
-            tipo_fluxo=tipo_escolhido,
-            rodada=metadata["rodada"],
-        )
-        safe_views_update(client, view_id, updated_modal)
-        return
 
     updated_modal = build_aprovacoes_modal(
         current_user_id=current_user_id,
@@ -638,7 +596,6 @@ def handle_marcas_select(ack, body, client):
         cnpj_info=cnpj_info,
         has_file_input=has_file_input,
         tipo_fluxo=metadata.get("tipo_fluxo"),
-        rodada=metadata.get("rodada"),
     )
     safe_views_update(client, view_id, updated_modal)
 
@@ -676,18 +633,6 @@ def handle_submission(ack, body, client):
     tipo_fluxo = metadata.get("tipo_fluxo") or FLUXO_CRESCIMENTO
 
     data = extract_modal_values(view["state"], num_exceptions)
-    data["tipo_fluxo"] = tipo_fluxo
-    channel_id = metadata.get("channel_id") or DEFAULT_CHANNEL_ID
-    user_id = body["user"]["id"]
-
-    # Nova rodada aberta pelos botões do card (CNPJ travado) ou pedido novo de escola que já tem thread
-    rodada_meta = metadata.get("rodada")
-    anterior = None
-    modo_rodada = None
-    if rodada_meta:
-        data["cnpj"] = rodada_meta.get("cnpj")
-        anterior = get_ticket(rodada_meta.get("parent_key") or "")
-        modo_rodada = rodada_meta.get("modo") or MODO_NOVA
 
     # Validações obrigatórias
     errors = {}
@@ -743,7 +688,7 @@ def handle_submission(ack, body, client):
     if not data.get("contexto_geral"):
         errors["contexto_geral_block"] = "Preencha o Contexto Geral da Escola/Negociação."
 
-    if not data.get("excecao_1") and not rodada_meta:
+    if not data.get("excecao_1"):
         errors["excecao_1_block"] = "Selecione a Exceção 1."
 
     if tipo_fluxo == FLUXO_RENOVACAO:
@@ -765,45 +710,16 @@ def handle_submission(ack, body, client):
     if not link_do_google_drive(sim_link):
         errors["simulador_block"] = "Cole o link do Simulador no Google Drive (https://drive.google.com/... ou https://docs.google.com/...)."
 
-    if rodada_meta:
-        if not anterior:
-            errors["excecao_1_block"] = "Não encontramos a rodada anterior desta escola. Abra uma nova solicitação."
-        elif anterior.get("sucedida_por"):
-            errors["excecao_1_block"] = "Esta escola já tem uma rodada mais recente na thread. Use os botões do último card."
-    elif len(cnpj_limpo) == 14:
-        ultima = ultima_rodada_da_escola(channel_id, cnpj_limpo)
-        if ultima and ultima.get("status") == "pending":
-            errors[get_actual_block_id("cnpj_block")] = "Esta escola já tem um pedido em andamento. Acompanhe pela thread dela no canal."
-        elif ultima:
-            anterior, modo_rodada = ultima, MODO_NOVA
-
-    if anterior and not errors and not _rodada_tem_o_que_aprovar(anterior, data, num_exceptions):
-        errors["excecao_1_block"] = "Nada novo para aprovar: inclua uma exceção ou altere algum dado do formulário."
-
     if errors:
         ack(response_action="errors", errors=errors)
         return
 
     # Formulário aprovado para envio!
     ack()
-    _criar_solicitacao(client, data, num_exceptions, tipo_fluxo, channel_id, user_id, anterior, modo_rodada)
 
-
-def _rodada_tem_o_que_aprovar(anterior: dict, data: dict, num_exceptions: int) -> bool:
-    if excecoes_do_formulario(data, num_exceptions):
-        return True
-    if tem_obrigatoria_nao_aprovada(anterior):
-        return True
-    valores_anteriores, completos = valores_do_ticket(anterior)
-    return (not completos) or bool(campos_alterados(valores_anteriores, data))
-
-
-def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str, channel_id: str,
-                       user_id: str, anterior: Optional[dict] = None, modo_rodada: Optional[str] = None):
-    """Monta alçadas e posts do pedido. Com `anterior`, o pedido vira nova rodada na thread da escola."""
     data = neutralizar_mrkdwn(data)
-    data["tipo_fluxo"] = tipo_fluxo
-    consultor_id = data.get("consultor") or user_id
+    channel_id = metadata.get("channel_id") or DEFAULT_CHANNEL_ID
+    consultor_id = data.get("consultor") or body["user"]["id"]
     lider_id = data.get("lider")
 
     # Dívida informada, usada também pelas exceções com aprovação automática até R$ 50k
@@ -1279,23 +1195,71 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
         "post_view": post_view,
     }
 
-    extra_ticket_data["form_values"] = {k: v for k, v in data.items() if k != "observacao_rodada"}
+    # 1. Posta a MENSAGEM ÚNICA no canal
+    temp_ticket = {
+        "key": "pending",
+        "escola": data.get("razao_social") or "Escola",
+        "status": "pending",
+        "details_text": unified_quote_text,
+        "main_text_base": unified_quote_text,
+        "extra_data": extra_ticket_data,
+        "tem_divida_alta": tem_divida_alta,
+        "marcas_com_inviab": bool(marcas_com_inviab),
+        "valor_divida": extra_ticket_data["valor_divida"],
+        "approvals": {
+            apprv["key"]: {
+                "key": apprv["key"],
+                "role_title": apprv["role_title"],
+                "short_label": apprv["short_label"],
+                "approver_id": apprv.get("approver_id") or "",
+                "approver_ids": apprv.get("approver_ids") or [],
+                "approver_name": apprv["approver_name"],
+                "scope_reason": apprv.get("scope_reason", ""),
+                "checklist_label": apprv.get("checklist_label", ""),
+                "status": "pending",
+            }
+            for apprv in approvals_list
+        }
+    }
 
-    if anterior:
-        ticket = _abrir_rodada_na_thread(client, anterior, modo_rodada, data, num_exceptions, approvals_list,
-                                         extra_ticket_data, unified_quote_text, consultor_id, consultor_tag, user_id)
-        channel_id = ticket["channel_id"]
-    else:
-        ticket = _abrir_thread_da_escola(client, channel_id, data, approvals_list, extra_ticket_data,
-                                         unified_quote_text, tem_divida_alta, marcas_com_inviab,
-                                         consultor_id, consultor_tag, user_id)
+    # 1. Canal: só a notificação (tipo, escola, CNPJ e status). Botões e detalhes ficam na thread.
+    resp = client.chat_postMessage(
+        channel=channel_id,
+        text=texto_aviso_canal(temp_ticket),
+        blocks=build_channel_notice_blocks(temp_ticket),
+        unfurl_links=False,
+        unfurl_media=False,
+    )
+    thread_ts = resp["ts"]
+
+    # Obtém permalink
+    thread_permalink = None
+    try:
+        p_resp = client.chat_getPermalink(channel=channel_id, message_ts=thread_ts)
+        thread_permalink = p_resp.get("permalink")
+    except Exception as e:
+        logger.warning(f"Erro ao obter permalink da mensagem: {e}")
+
+    # Registra o ticket no estado persistente com a chave real
+    ticket = create_ticket(
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        escola=data.get("razao_social") or "Escola",
+        consultor_id=consultor_id,
+        consultor_name=consultor_tag,
+        details_text=unified_quote_text,
+        approvals_list=approvals_list,
+        main_text_base=unified_quote_text,
+        thread_permalink=thread_permalink,
+        extra_data=extra_ticket_data,
+    )
 
     # 2. Thread: card de aprovação (status, resumo, checklist e botões), atualizado a cada decisão
     ticket["card_na_thread"] = True
     try:
         card_resp = client.chat_postMessage(
             channel=channel_id,
-            thread_ts=ticket["thread_ts"],
+            thread_ts=thread_ts,
             text=texto_card_thread(ticket),
             blocks=build_thread_blocks(ticket),
             metadata=metadata_ticket(ticket),
@@ -1307,29 +1271,6 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
     except Exception as e:
         logger.error(f"Erro ao postar o card de aprovação na thread: {e}")
 
-    if anterior:
-        # Aviso da escola no canal passa a mostrar o status desta rodada
-        try:
-            client.chat_update(
-                channel=channel_id,
-                ts=ticket["thread_ts"],
-                text=texto_post_principal(ticket),
-                blocks=build_main_post_blocks(ticket),
-                metadata=metadata_ticket(ticket),
-            )
-        except Exception as e:
-            logger.warning(f"Erro ao atualizar o aviso da escola no canal: {e}")
-
-    if ticket.get("status") != "pending":
-        # Rodada sem nenhuma alçada pendente (ex.: exceção que não precisa de aprovação)
-        try:
-            client.chat_postMessage(unfurl_links=False, unfurl_media=False, channel=channel_id,
-                                    thread_ts=ticket["thread_ts"], text=mensagem_conclusao(ticket),
-                                    blocks=blocos_conclusao(ticket))
-            client.reactions_add(channel=channel_id, timestamp=ticket["thread_ts"], name=reacao_conclusao(ticket))
-        except Exception as e:
-            logger.warning(f"Erro ao concluir rodada sem pendências: {e}")
-
     # Envia os cards executivos individuais na DM privada de cada aprovador
     try:
         send_dm_approval_cards(client, ticket, consultor_id)
@@ -1337,262 +1278,6 @@ def _criar_solicitacao(client, data: dict, num_exceptions: int, tipo_fluxo: str,
         logger.error(f"Erro ao enviar DMs de aprovação: {e}")
 
     logger.info(f"Solicitação criada com sucesso: {ticket['key']} no canal {channel_id}")
-
-
-def _abrir_thread_da_escola(client, channel_id, data, approvals_list, extra_ticket_data, unified_quote_text,
-                            tem_divida_alta, marcas_com_inviab, consultor_id, consultor_tag, user_id) -> dict:
-    """Primeiro pedido da escola: aviso no canal (escola, CNPJ e status) que vira a thread única dela."""
-    temp_ticket = {
-        "key": "pending",
-        "escola": data.get("razao_social") or "Escola",
-        "status": "pending",
-        "extra_data": extra_ticket_data,
-        "tem_divida_alta": tem_divida_alta,
-        "marcas_com_inviab": bool(marcas_com_inviab),
-        "approvals": {apprv["key"]: {"status": "pending"} for apprv in approvals_list},
-    }
-    resp = client.chat_postMessage(
-        channel=channel_id,
-        text=texto_aviso_canal(temp_ticket),
-        blocks=build_channel_notice_blocks(temp_ticket),
-        unfurl_links=False,
-        unfurl_media=False,
-    )
-    thread_ts = resp["ts"]
-
-    thread_permalink = None
-    try:
-        p_resp = client.chat_getPermalink(channel=channel_id, message_ts=thread_ts)
-        thread_permalink = p_resp.get("permalink")
-    except Exception as e:
-        logger.warning(f"Erro ao obter permalink da mensagem: {e}")
-
-    return create_ticket(
-        channel_id=channel_id,
-        thread_ts=thread_ts,
-        escola=data.get("razao_social") or "Escola",
-        consultor_id=consultor_id,
-        consultor_name=consultor_tag,
-        details_text=unified_quote_text,
-        approvals_list=approvals_list,
-        main_text_base=unified_quote_text,
-        thread_permalink=thread_permalink,
-        extra_data=extra_ticket_data,
-        criado_por_id=user_id,
-    )
-
-
-def _abrir_rodada_na_thread(client, anterior, modo_rodada, data, num_exceptions, approvals_list, extra_ticket_data,
-                            unified_quote_text, consultor_id, consultor_tag, user_id) -> dict:
-    """Nova rodada na thread da escola: mensagem com o que mudou, alçadas já aprovadas herdadas e card novo."""
-    channel_id = anterior["channel_id"]
-    thread_ts = anterior["thread_ts"]
-    valores_anteriores, completos = valores_do_ticket(anterior)
-    mudancas = campos_alterados(valores_anteriores, data) if completos else []
-    herdar_aprovacoes(approvals_list, anterior, gerais_mudaram=bool(mudancas) or not completos)
-    rodada = rodada_de(anterior) + 1
-
-    texto = mensagem_nova_rodada(
-        rodada=rodada,
-        modo=modo_rodada,
-        autor_id=user_id,
-        mudancas=mudancas,
-        excecoes=excecoes_do_formulario(data, num_exceptions),
-        excecoes_antes=excecoes_reprovadas_da_rodada(anterior) if modo_rodada == MODO_REENVIO else [],
-        observacao=data.get("observacao_rodada") or "",
-    )
-    if not completos:
-        texto += "\n_A rodada anterior é de antes da thread única, então não dá para comparar os dados gerais; todas as alçadas decidem de novo._"
-    try:
-        client.chat_postMessage(unfurl_links=False, unfurl_media=False, channel=channel_id, thread_ts=thread_ts, text=texto)
-    except Exception as e:
-        logger.error(f"Erro ao postar a abertura da rodada {rodada}: {e}")
-
-    ticket = create_ticket(
-        channel_id=channel_id,
-        thread_ts=thread_ts,
-        escola=data.get("razao_social") or anterior.get("escola") or "Escola",
-        consultor_id=consultor_id,
-        consultor_name=consultor_tag,
-        details_text=unified_quote_text,
-        approvals_list=approvals_list,
-        main_text_base=unified_quote_text,
-        thread_permalink=anterior.get("thread_permalink"),
-        extra_data=extra_ticket_data,
-        rodada=rodada,
-        rodada_anterior=anterior["key"],
-        modo_rodada=modo_rodada,
-        criado_por_id=user_id,
-    )
-
-    # Card da rodada anterior perde os botões de nova rodada; a reação ✅/❌ do aviso volta a valer para a rodada atual
-    anterior_atual = marcar_sucedida(anterior["key"], ticket["key"])
-    if anterior_atual and anterior_atual.get("card_msg_ts"):
-        try:
-            client.chat_update(channel=channel_id, ts=anterior_atual["card_msg_ts"],
-                               blocks=build_thread_blocks(anterior_atual), text=texto_card_thread(anterior_atual),
-                               metadata=metadata_ticket(anterior_atual))
-        except Exception as e:
-            logger.warning(f"Erro ao atualizar o card da rodada anterior: {e}")
-    for reacao in ("white_check_mark", "x"):
-        try:
-            client.reactions_remove(channel=channel_id, timestamp=thread_ts, name=reacao)
-        except Exception:
-            pass
-    return ticket
-
-
-# =========================================================================
-# 3.1. THREAD ÚNICA POR ESCOLA: NOVA RODADA (incluir aprovação / reenviar reprovada)
-# =========================================================================
-
-def _pode_abrir_rodada(ticket: dict, user_id: str) -> bool:
-    return user_id in {ticket.get("consultor_id"), ticket.get("criado_por_id")} or is_user_triagem(user_id)
-
-
-def _linhas_ajustes(ticket: dict) -> list:
-    linhas = []
-    for a in reprovacoes(ticket):
-        rotulo = a.get("checklist_label") or a.get("short_label") or a.get("role_title", "Alçada")
-        detalhe = f": {a['details']}" if a.get("details") else ""
-        linhas.append(f"• *{rotulo}* · {a.get('reason_label') or 'Reprovado'}{detalhe}"[:400])
-    return linhas
-
-
-@app.action("btn_rodada_nova")
-@app.action("btn_rodada_reenviar")
-def handle_btn_nova_rodada(ack, body, client):
-    """Consultor abre uma nova rodada a partir do card finalizado: formulário curto, CNPJ travado."""
-    ack()
-    action = body["actions"][0]
-    modo = MODO_REENVIO if action["action_id"] == "btn_rodada_reenviar" else MODO_NOVA
-    user_id = body["user"]["id"]
-    channel_id = (body.get("channel") or {}).get("id") or DEFAULT_CHANNEL_ID
-    ticket = get_ticket(action.get("value") or "")
-
-    def avisar(texto):
-        try:
-            client.chat_postEphemeral(channel=channel_id, user=user_id, text=texto,
-                                      thread_ts=(ticket or {}).get("thread_ts"))
-        except Exception as e:
-            logger.warning(f"Erro ao avisar sobre nova rodada: {e}")
-
-    if not ticket:
-        avisar("⚠️ Não encontramos esse pedido no sistema.")
-        return
-    if ticket.get("sucedida_por"):
-        avisar("⚠️ Esta escola já tem uma rodada mais recente. Use os botões do último card da thread.")
-        return
-    if not _pode_abrir_rodada(ticket, user_id):
-        avisar("⚠️ Só o consultor do pedido pode incluir aprovações ou reenviar o que foi reprovado.")
-        return
-
-    valores, completos = valores_do_ticket(ticket)
-    excecoes = excecoes_reprovadas_da_rodada(ticket) if modo == MODO_REENVIO else []
-    cnpj = (ticket.get("extra_data") or {}).get("cnpj") or ticket.get("cnpj")
-    rodada = {"modo": modo, "parent_key": ticket["key"], "cnpj": cnpj}
-    tipo = valores.get("tipo_fluxo") or (ticket.get("extra_data") or {}).get("tipo_fluxo") or FLUXO_CRESCIMENTO
-
-    if not completos:
-        # Pedido de antes da thread única: não há formulário salvo, vai direto para o completo
-        modal = build_aprovacoes_modal(
-            current_user_id=user_id,
-            channel_id=ticket["channel_id"],
-            num_exceptions=max(1, len(excecoes)),
-            saved_values=preencher_excecoes(valores, excecoes),
-            tipo_fluxo=tipo,
-            rodada=rodada,
-        )
-    else:
-        modal = build_rodada_modal(
-            rodada=rodada,
-            escola=ticket.get("escola") or "Escola",
-            tipo_fluxo=tipo,
-            excecoes=excecoes,
-            num_exceptions=max(1, len(excecoes)),
-            ajustes_pedidos=_linhas_ajustes(ticket) if modo == MODO_REENVIO else None,
-        )
-    safe_views_open(client, body["trigger_id"], modal)
-
-
-def _valores_modal_rodada(view: dict):
-    metadata = json.loads(view.get("private_metadata") or "{}")
-    num_exceptions = metadata.get("num_exceptions", 1)
-    estado = extract_modal_values(view["state"], num_exceptions)
-    excecoes = excecoes_do_formulario(estado, num_exceptions)
-    return metadata, num_exceptions, estado, excecoes
-
-
-@app.action("btn_rodada_add_exception")
-def handle_rodada_add_exception(ack, body, client):
-    ack()
-    view = body["view"]
-    metadata, num_exceptions, estado, _ = _valores_modal_rodada(view)
-    anterior = get_ticket(metadata["rodada"]["parent_key"]) or {}
-    valores, _ = valores_do_ticket(anterior)
-    excecoes = [
-        {"nome": estado.get(f"excecao_{i}") or "", "contexto": estado.get(f"contexto_excecao_{i}") or ""}
-        for i in range(1, num_exceptions + 1)
-    ]
-    modal = build_rodada_modal(
-        rodada=metadata["rodada"],
-        escola=anterior.get("escola") or "Escola",
-        tipo_fluxo=valores.get("tipo_fluxo"),
-        excecoes=excecoes,
-        num_exceptions=num_exceptions + 1,
-        ajustes_pedidos=_linhas_ajustes(anterior) if metadata["rodada"].get("modo") == MODO_REENVIO else None,
-        observacao=estado.get("observacao_rodada"),
-    )
-    safe_views_update(client, view["id"], modal)
-
-
-@app.action("btn_rodada_form_completo")
-def handle_rodada_form_completo(ack, body, client):
-    """Um clique a mais: abre o formulário inteiro já preenchido, com o CNPJ travado."""
-    ack()
-    view = body["view"]
-    metadata, num_exceptions, estado, excecoes = _valores_modal_rodada(view)
-    anterior = get_ticket(metadata["rodada"]["parent_key"]) or {}
-    valores, _ = valores_do_ticket(anterior)
-    valores = preencher_excecoes(valores, excecoes)
-    valores["observacao_rodada"] = estado.get("observacao_rodada")
-    modal = build_aprovacoes_modal(
-        current_user_id=body["user"]["id"],
-        channel_id=anterior.get("channel_id") or DEFAULT_CHANNEL_ID,
-        num_exceptions=max(1, len(excecoes)),
-        saved_values=valores,
-        tipo_fluxo=valores.get("tipo_fluxo"),
-        rodada=metadata["rodada"],
-    )
-    safe_views_update(client, view["id"], modal)
-
-
-@app.view("modal_rodada")
-def handle_submission_rodada(ack, body, client):
-    """Envio do formulário curto: dados gerais iguais aos da rodada anterior + exceções desta rodada."""
-    view = body["view"]
-    metadata, num_exceptions, estado, excecoes = _valores_modal_rodada(view)
-    rodada = metadata.get("rodada") or {}
-    anterior = get_ticket(rodada.get("parent_key") or "")
-    erro = None
-    if not anterior:
-        erro = "Não encontramos a rodada anterior desta escola."
-    elif anterior.get("sucedida_por"):
-        erro = "Esta escola já tem uma rodada mais recente na thread."
-    elif not excecoes and not tem_obrigatoria_nao_aprovada(anterior):
-        erro = "Selecione pelo menos uma exceção, ou use \"Editar formulário completo\" para mudar outros dados."
-    if erro:
-        ack(response_action="errors", errors={"excecao_1_block": erro})
-        return
-    ack()
-
-    valores, _ = valores_do_ticket(anterior)
-    data = preencher_excecoes(valores, excecoes)
-    data["observacao_rodada"] = estado.get("observacao_rodada")
-    _criar_solicitacao(
-        client, data, max(1, len(excecoes)), valores.get("tipo_fluxo") or FLUXO_CRESCIMENTO,
-        anterior["channel_id"], body["user"]["id"], anterior, rodada.get("modo") or MODO_NOVA,
-    )
 
 
 # =========================================================================

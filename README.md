@@ -11,7 +11,6 @@ Aplicativo nativo para o Slack da **Arco Educação (Ciclo Comercial 2026/27)** 
 * **Matriz de Governança Determinística (60+ Regras):** Roteamento automático de alçadas para Líder Direto, Logística, Pedagógico, Produtos, Jurídico, Financeiro e Diretoria N3 sem erro humano.
 * **Substituição por Ausência (@triagem):** Módulo de contingência para transferir alçadas temporariamente durante férias ou licenças, com prazo de vigência definido e auditoria na thread.
 * **Cobrança Inteligente 1x ao Dia:** Robô de lembretes (10h, seg-sex) que cobra cirurgicamente apenas os decisores com pendências ativas.
-* **Thread Única por Escola:** cada escola (CNPJ) tem uma só thread no canal. Novos pedidos viram "rodadas" dentro dela: o consultor usa "Incluir nova aprovação" ou "Reenviar com ajustes" no card finalizado (formulário curto, com opção de editar o formulário completo; o CNPJ não muda). A thread mostra o que mudou em relação à rodada anterior, e alçadas obrigatórias já aprovadas não decidem de novo se os dados gerais não mudaram.
 * **Ativação por Botão Fixo no Canal:** Painel permanente com botão interativo no canal, permitindo a abertura de solicitações mesmo com envio de mensagens bloqueado.
 
 ---
