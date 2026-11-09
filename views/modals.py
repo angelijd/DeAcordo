@@ -5,6 +5,11 @@ from config.exceptions_rules import ALL_EXCEPTIONS_LIST
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO
 from utils.currency_words import valor_para_extenso, format_real_input
 
+
+# Slack rejeita o modal inteiro se o initial_value de um url_text_input não for URL.
+def _url_valida(valor) -> bool:
+    return isinstance(valor, str) and re.match(r"^https?://\S+$", valor.strip(), re.IGNORECASE) is not None
+
 # Lista de opções de Frente, por tipo de fluxo
 FRENTES_OPTIONS_POR_FLUXO = {
     FLUXO_CRESCIMENTO: [
@@ -614,8 +619,8 @@ def build_aprovacoes_modal(
         "action_id": "link_sf_input",
         "placeholder": {"type": "plain_text", "text": "https://..."},
     }
-    if saved_values.get("link_sf"):
-        sf_elem["initial_value"] = saved_values.get("link_sf")
+    if _url_valida(saved_values.get("link_sf")):
+        sf_elem["initial_value"] = saved_values["link_sf"].strip()
     blocks.append({
         "type": "input",
         "block_id": "link_sf_block",
@@ -809,8 +814,8 @@ def build_aprovacoes_modal(
         "action_id": "simulador_link_input",
         "placeholder": {"type": "plain_text", "text": "https://drive.google.com/..."},
     }
-    if saved_values.get("simulador_link"):
-        simulador_elem["initial_value"] = saved_values["simulador_link"]
+    if _url_valida(saved_values.get("simulador_link")):
+        simulador_elem["initial_value"] = saved_values["simulador_link"].strip()
     blocks.append({
         "type": "input",
         "block_id": "simulador_block",
