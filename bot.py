@@ -51,6 +51,7 @@ from services.dm_approval_service import send_dm_approval_cards, send_dm_substit
 from services.consultor_feedback_service import send_consultor_progress_dm, send_consultor_rejection_dm
 from services.substitution_service import registrar_substituicao, get_active_substitute
 from services.painel_service import postar_painel, atualizar_painel
+from services.home_service import build_home_view, atualizar_home_dos_usuarios
 from views.modals import (
     build_aprovacoes_modal,
     extract_modal_values,
@@ -1253,6 +1254,10 @@ def handle_submission(ack, body, client):
         thread_permalink=thread_permalink,
         extra_data=extra_ticket_data,
     )
+    try:
+        atualizar_home_dos_usuarios(client, ticket, check_approval_authorization)
+    except Exception as e:
+        logger.warning(f"Erro ao atualizar a aba Início após criar o ticket: {e}")
 
     # 2. Thread: card de aprovação (status, resumo, checklist e botões), atualizado a cada decisão
     ticket["card_na_thread"] = True
@@ -1438,6 +1443,11 @@ def handle_dm_approval_action(ack, body, client):
             except Exception as e:
                 logger.warning(f"Erro no encerramento automático: {e}")
 
+        try:
+            atualizar_home_dos_usuarios(client, updated_ticket, check_approval_authorization)
+        except Exception as e:
+            logger.warning(f"Erro ao atualizar a aba Início após aprovação via DM: {e}")
+
     if not is_approved:
         # Abre o modal oficial de reprovação para coletar o motivo padronizado
         modal = build_reprovar_modal(
@@ -1574,6 +1584,12 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
             )
         except Exception as e:
             logger.warning(f"Reação check_mark: {e}")
+
+    try:
+        atualizar_home_dos_usuarios(client, updated_ticket, check_approval_authorization)
+    except Exception as e:
+        logger.warning(f"Erro ao atualizar a aba Início após aprovação: {e}")
+
     return updated_ticket
 
 
@@ -1585,6 +1601,33 @@ def _registrar_aprovacao(client, ticket: dict, approval_key: str, user_id: str, 
 def handle_btn_abrir_simulador(ack):
     """Botão de link do simulador: o Slack abre o link, aqui só confirma o clique."""
     ack()
+
+
+@app.event("app_home_opened")
+def handle_app_home_opened(client, event):
+    """Monta e publica a aba Início de quem abriu, de acordo com o(s) perfil(is) dela nos tickets ativos."""
+    if event.get("tab") != "home":
+        return
+    user_id = event["user"]
+    try:
+        client.views_publish(user_id=user_id, view=build_home_view(user_id, check_approval_authorization))
+    except Exception as e:
+        logger.error(f"Erro ao publicar a aba Início para {user_id}: {e}")
+
+
+@app.action("home_btn_decidir")
+def handle_home_btn_decidir(ack, body, client):
+    """Abre, a partir da aba Início, a janela só com as alçadas pendentes de quem clicou."""
+    ack()
+    user_id = body["user"]["id"]
+    ticket = get_ticket(body["actions"][0].get("value", ""))
+    if not ticket or ticket.get("status") in ("completed", "rejected") or not alcadas_do_usuario(ticket, user_id, check_approval_authorization):
+        try:
+            client.views_publish(user_id=user_id, view=build_home_view(user_id, check_approval_authorization))
+        except Exception as e:
+            logger.warning(f"Erro ao atualizar a aba Início após clique obsoleto: {e}")
+        return
+    safe_views_open(client, body["trigger_id"], build_decidir_modal(ticket, user_id, check_approval_authorization))
 
 
 @app.action("btn_decidir_minhas")
@@ -1892,6 +1935,11 @@ def handle_view_reprovar_ticket(ack, body, client, view):
         )
     except Exception as e:
         logger.warning(f"Erro ao atualizar post principal pós-reprovação: {e}")
+
+    try:
+        atualizar_home_dos_usuarios(client, updated_ticket, check_approval_authorization)
+    except Exception as e:
+        logger.warning(f"Erro ao atualizar a aba Início após reprovação: {e}")
 
     # 5. Se veio da DM privada, atualiza o card da DM in-place com escaneabilidade
     if is_from_dm and dm_message_ts:
@@ -2277,6 +2325,11 @@ def handle_view_triagem_substituicao(ack, body, client, view):
         )
     except Exception as e:
         logger.error(f"Erro ao enviar DM para o substituto: {e}")
+
+    try:
+        atualizar_home_dos_usuarios(client, updated_ticket, check_approval_authorization, extra_user_ids=[orig_id])
+    except Exception as e:
+        logger.warning(f"Erro ao atualizar a aba Início após substituição: {e}")
 
 
 # =========================================================================
