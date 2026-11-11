@@ -42,8 +42,8 @@ EXCEPTIONS_RULES = {
         "ops_approver": None,
     },
     "Simulador - Inviabilidade ampliação": {
-        "comercial": "-",
-        "comercial_approver": None,
+        "comercial": "Líder do líder do consultor",
+        "comercial_approver": "LIDER_DO_LIDER",
         "ops": "-",
         "ops_approver": None,
     },
@@ -179,6 +179,7 @@ EXCEPTIONS_RULES = {
         "ops": "Dívida até R$ 50k é aprovação automática; acima disso, acionar Rafael Bae (SLA: 2 dias úteis)",
         "ops_approver": "Rafael Bae",
         "check_debt": True,
+        "automatica_ate_50k": True,
     },
     "Incentivo Comercial - Padrão": {
         "comercial": "Aprovação necessária apenas se incentivo > 20% do ACV (N3 - Chalfun/Faleiros) @triagem psc",
@@ -210,6 +211,7 @@ EXCEPTIONS_RULES = {
         "ops": "Dívida até R$ 50k aprovação automática; acima disso, acionar Rafael Bae (SLA: 2 dias úteis)",
         "ops_approver": "Rafael Bae",
         "check_debt": True,
+        "automatica_ate_50k": True,
     },
     "Repasse - Antecipação de pagamento": {
         "comercial": "-",
@@ -361,6 +363,7 @@ EXCEPTIONS_RULES = {
         "ops": "Verificar dívida interna: até R$ 50k aprovação automática; acima disso marcar Rafael Bae (SLA 2 dias úteis) @triagem--contratos psc",
         "ops_approver": "Rafael Bae",
         "check_debt": True,
+        "ops_automatica_ate_50k": True,
     },
     "Chromebook - Aumento da vigência de comodato": {
         "comercial": "Rafael De Simone Martines",
@@ -395,8 +398,18 @@ LIMITE_DIVIDA_AUTOMATICA = 50000.0
 
 
 def aplicar_dispensa_por_divida(rule: dict, valor_divida: float):
-    """Exceções com "automatica_ate_50k": sem aprovador quando a dívida é até R$ 50k (ou não há dívida).
+    """Exceções com "automatica_ate_50k" (dispensa comercial e operações) ou
+    "ops_automatica_ate_50k" (dispensa só a alçada de operações, quando a comercial não
+    depende de dívida - ex.: Churn 0, cuja alçada comercial é sobre outro critério):
+    sem o aprovador correspondente quando a dívida é até R$ 50k (ou não há dívida).
     Devolve (regra efetiva, texto da dispensa ou "")."""
-    if rule.get("automatica_ate_50k") and (valor_divida or 0.0) <= LIMITE_DIVIDA_AUTOMATICA:
-        return {**rule, "comercial_approver": None, "ops_approver": None}, "aprovação automática (dívida até R$ 50k)"
+    dentro_do_limite = (valor_divida or 0.0) <= LIMITE_DIVIDA_AUTOMATICA
+    if not dentro_do_limite:
+        return rule, ""
+
+    texto = "aprovação automática (dívida até R$ 50k)"
+    if rule.get("automatica_ate_50k"):
+        return {**rule, "comercial_approver": None, "ops_approver": None}, texto
+    if rule.get("ops_automatica_ate_50k"):
+        return {**rule, "ops_approver": None}, texto
     return rule, ""
