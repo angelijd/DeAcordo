@@ -3,7 +3,9 @@ Aprovador N3 (Renovação) definido automaticamente pela Vertical (Frente CSE/CS
 Fonte: planilha "N3_por_marca" enviada pela Jéssica em 2026-10-09.
 """
 
+import json
 import os
+import threading
 from typing import Dict, List, Optional
 
 # false = só cita o nome do N3 (sem marcar no Slack e sem DM); true = marca e manda a DM de aprovação.
@@ -13,14 +15,55 @@ N3_MARCAR_APROVADORES = os.environ.get("N3_MARCAR_APROVADORES", "false").lower()
 N3_GENERICO = "N3 - Direto do Chalfun/Faleiros"
 
 # Modo alta demanda (true): essas exceções vão para o N3 de cada marca (tabela abaixo, só na Renovação).
-# Desligado (padrão): vão para a diretoria N3 (lista abaixo). Com mais de um nome, qualquer um decide.
+# Desligado (padrão): vão para a diretoria N3 (lista abaixo), em rodízio a cada pedido (ver
+# escolher_diretor_do_pedido) - não é mais "qualquer um decide".
 MODO_ALTA_DEMANDA = os.environ.get("MODO_ALTA_DEMANDA", "false").lower() == "true"
 
-# Por ora só o Chalfun (regra em revisão). Para incluir o Faleiros:
-# {"nome": "Lucas Faleiros", "slack_id": "U04JBEWH421"},
+# Diretoria N3: alterna (rodízio) a cada pedido entre os nomes desta lista.
 DIRETORES_N3 = [
     {"nome": "Andre Chalfun", "slack_id": "U01P9UZ8LTH"},
+    {"nome": "Lucas Faleiros", "slack_id": "U04JBEWH421"},
 ]
+
+# Arquivo que guarda o índice do próximo diretor no rodízio (persiste entre reinícios do bot).
+_DIRETORIA_STATE_FILE = os.environ.get("N3_DIRETORIA_STATE_FILE", "data/n3_diretoria_state.json")
+_diretoria_lock = threading.Lock()
+
+
+def escolher_diretor_do_pedido() -> Dict:
+    """
+    Escolhe o diretor da vez para as exceções da Diretoria N3 (quando MODO_ALTA_DEMANDA
+    está desligado): alterna entre os nomes de DIRETORES_N3 a cada pedido (rodízio),
+    não "qualquer um decide" como antes. Chamar uma única vez por pedido (reaproveitar
+    o resultado para todas as exceções desse mesmo pedido que caiam na Diretoria N3).
+    """
+    if not DIRETORES_N3:
+        return {"nome": "Diretoria N3", "slack_id": ""}
+    if len(DIRETORES_N3) == 1:
+        return DIRETORES_N3[0]
+
+    with _diretoria_lock:
+        indice = 0
+        try:
+            if os.path.exists(_DIRETORIA_STATE_FILE):
+                with open(_DIRETORIA_STATE_FILE, "r", encoding="utf-8") as f:
+                    indice = json.load(f).get("proximo_indice", 0)
+        except Exception:
+            indice = 0
+
+        diretor = DIRETORES_N3[indice % len(DIRETORES_N3)]
+
+        try:
+            os.makedirs(os.path.dirname(_DIRETORIA_STATE_FILE) or ".", exist_ok=True)
+            tmp = _DIRETORIA_STATE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"proximo_indice": (indice + 1) % len(DIRETORES_N3)}, f)
+            os.replace(tmp, _DIRETORIA_STATE_FILE)
+        except Exception:
+            pass  # Falha ao persistir o rodízio não deve travar o envio do pedido.
+
+        return diretor
+
 
 # Regra por segmento (Ultra High / Low) desligada até o formulário perguntar o segmento da escola.
 N3_USAR_SEGMENTO = False

@@ -19,7 +19,7 @@ from config.approvers_map import APPROVERS_CONFIG, format_user_mention
 from config.exceptions_rules import EXCEPTIONS_RULES, aplicar_dispensa_por_divida
 from config.triagem_config import is_user_triagem
 from config.flow_config import FLUXO_CRESCIMENTO, FLUXO_RENOVACAO, resolver_tipo_fluxo
-from config.n3_config import DIRETORES_N3, MODO_ALTA_DEMANDA, N3_GENERICO, N3_MARCAR_APROVADORES, resolver_aprovadores_n3
+from config.n3_config import MODO_ALTA_DEMANDA, N3_GENERICO, N3_MARCAR_APROVADORES, escolher_diretor_do_pedido, resolver_aprovadores_n3
 from services.receita_service import consultar_cnpj
 from services.inep_service import buscar_inep
 from services.ticket_service import (
@@ -691,6 +691,10 @@ def handle_submission(ack, body, client):
     if not data.get("excecao_1"):
         errors["excecao_1_block"] = "Selecione a Exceção 1."
 
+    excecoes_selecionadas = [data.get(f"excecao_{i}") for i in range(1, num_exceptions + 1)]
+    if "Simulador - Inviabilidade ampliação" in excecoes_selecionadas and not data.get("lider_do_lider"):
+        errors["lider_do_lider_block"] = "Informe o Líder do Líder do Consultor (aprovador da exceção 'Simulador - Inviabilidade ampliação')."
+
     if tipo_fluxo == FLUXO_RENOVACAO:
         # Validação dos campos específicos da Renovação
         if data.get("reajuste_liquido") is None or str(data.get("reajuste_liquido")).strip() == "":
@@ -721,6 +725,7 @@ def handle_submission(ack, body, client):
     channel_id = metadata.get("channel_id") or DEFAULT_CHANNEL_ID
     consultor_id = data.get("consultor") or body["user"]["id"]
     lider_id = data.get("lider")
+    lider_do_lider_id = data.get("lider_do_lider")
 
     # Dívida informada, usada também pelas exceções com aprovação automática até R$ 50k
     valor_divida_num = 0.0
@@ -730,6 +735,15 @@ def handle_submission(ack, body, client):
     # Exceção que já leva a dívida alta a um validador próprio (ex.: Modalidade de venda -> Matheus).
     # Nesse caso a alçada geral de dívida (Rafael Bae) não é criada.
     divida_validada_por_excecao = False
+
+    # Diretoria N3 (Chalfun/Faleiros) em rodízio: um único diretor por pedido, não "qualquer um decide".
+    # Cacheado aqui porque pode haver mais de uma exceção na Diretoria N3 no mesmo pedido.
+    _diretor_n3_do_pedido = {}
+
+    def _diretor_n3():
+        if not _diretor_n3_do_pedido:
+            _diretor_n3_do_pedido["valor"] = escolher_diretor_do_pedido()
+        return _diretor_n3_do_pedido["valor"]
 
     # Mapeamento dos Aprovadores das Exceções selecionadas
     excecoes_detalhes = []
@@ -760,10 +774,14 @@ def handle_submission(ack, body, client):
             lider_tag = format_mention(lider_id)
             com_tag = f"{lider_tag} (Líder Direto)"
             aprovadores_para_marcar.add(lider_tag)
+        elif aprov_com == "LIDER_DO_LIDER":
+            lider_lider_tag = format_mention(lider_do_lider_id)
+            com_tag = f"{lider_lider_tag} (Líder do Líder)"
+            aprovadores_para_marcar.add(lider_lider_tag)
         elif aprov_com == N3_GENERICO:
-            com_tag = " ou ".join(
-                f"<@{d['slack_id']}>" if (N3_MARCAR_APROVADORES and d["slack_id"]) else f"@{d['nome']}"
-                for d in DIRETORES_N3
+            diretor = _diretor_n3()
+            com_tag = (
+                f"<@{diretor['slack_id']}>" if (N3_MARCAR_APROVADORES and diretor.get("slack_id")) else f"@{diretor['nome']}"
             )
         elif aprov_com:
             com_tag = format_user_mention(aprov_com)
@@ -1056,9 +1074,13 @@ def handle_submission(ack, body, client):
     })
 
     # Uma alçada por exceção (e por aprovador dela): reprovar uma exceção não encerra o pedido
+    lider_do_lider_display = "Líder do Líder" if (not lider_do_lider_id or lider_do_lider_id.startswith(("U", "W"))) else lider_do_lider_id
+
     def _aprovador_excecao(nome_regra):
         if nome_regra == "LIDER_DIRETO":
             return (lider_id if (lider_id and lider_id.startswith(("U", "W"))) else ""), lider_display
+        if nome_regra == "LIDER_DO_LIDER":
+            return (lider_do_lider_id if (lider_do_lider_id and lider_do_lider_id.startswith(("U", "W"))) else ""), lider_do_lider_display
         slack_id = (APPROVERS_CONFIG.get(nome_regra) or {}).get("slack_id") or ""
         return slack_id, nome_regra
 
@@ -1070,14 +1092,13 @@ def handle_submission(ack, body, client):
             if not nome_regra:
                 continue
             if nome_regra == N3_GENERICO and not (MODO_ALTA_DEMANDA and aprovadores_n3):
-                ids_diretores = [d["slack_id"] for d in DIRETORES_N3 if d["slack_id"]] if N3_MARCAR_APROVADORES else []
+                diretor = _diretor_n3()
                 approvals_list.append({
-                    "key": f"excecao_{item['numero']}_com",
-                    "role_title": f"{titulo} (Diretoria N3)"[:140],
-                    "short_label": f"Exceção {item['numero']} (Diretoria)",
-                    "approver_id": ids_diretores[0] if ids_diretores else "",
-                    "approver_ids": ids_diretores,
-                    "approver_name": " ou ".join(d["nome"] for d in DIRETORES_N3),
+                    "key": f"excecao_{item['numero']}_{sufixo}",
+                    "role_title": f"{titulo} (Diretoria N3 - {diretor['nome']})"[:140],
+                    "short_label": f"Exceção {item['numero']} (Diretoria - {diretor['nome']})"[:60],
+                    "approver_id": diretor["slack_id"] if N3_MARCAR_APROVADORES else "",
+                    "approver_name": diretor["nome"],
                     "scope_reason": f"Exceção {item['numero']}: {item['nome']}. Contexto: {item['contexto']}",
                     "parcial": True,
                 })
